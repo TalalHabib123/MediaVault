@@ -1,0 +1,182 @@
+export type AppConfig = {
+  server: {
+    host: string;
+    port: number;
+  };
+  paths: {
+    sources: string[];
+    library_root: string;
+    views_root: string;
+    preview_cache: string;
+  };
+  tools: {
+    ffmpeg: string;
+    ffprobe: string;
+    vlc: string;
+  };
+  mode: {
+    portable: boolean;
+  };
+};
+
+export type MediaType = "movie" | "series_episode" | "video";
+
+export type MediaItem = {
+  id: number;
+  title: string;
+  media_type: MediaType;
+  source_path: string;
+  canonical_path: string;
+  file_name: string;
+  extension: string;
+  duration_seconds: number;
+  width: number;
+  height: number;
+  video_codec: string;
+  audio_codec: string;
+  filesize_bytes: number;
+  season_number: number;
+  episode_number: number;
+  type_source: "auto" | "manual";
+  title_source: "auto" | "manual";
+  sequence_source: "auto" | "manual";
+  company_id: number | null;
+  company_name: string;
+  series_id: number | null;
+  series_name: string;
+  is_tagged: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type LibraryResponse = {
+  items: MediaItem[];
+  total: number;
+  limit: number;
+  offset: number;
+  tagged_status: string;
+};
+
+export type ScanSummary = {
+  sources: number;
+  files_seen: number;
+  inserted: number;
+  updated: number;
+  skipped: number;
+  errors: string[];
+};
+
+export type Company = {
+  id: number;
+  name: string;
+};
+
+export type Person = {
+  id: number;
+  name: string;
+};
+
+export type Category = {
+  id: number;
+  name: string;
+  kind: "main" | "sub";
+  parent_id: number | null;
+  parent_name: string;
+};
+
+export type Tag = {
+  id: number;
+  name: string;
+};
+
+export type Series = {
+  id: number;
+  name: string;
+  company_id: number | null;
+  company_name: string;
+};
+
+export type MetadataOptions = {
+  companies: Company[];
+  people: Person[];
+  categories: Category[];
+  tags: Tag[];
+  series: Series[];
+};
+
+export type MediaAssignments = {
+  company_id: number | null;
+  series_id: number | null;
+  person_ids: number[];
+  category_ids: number[];
+  tag_ids: number[];
+};
+
+export type MediaDetailResponse = {
+  item: MediaItem;
+  assignments: MediaAssignments;
+};
+
+export type UpdateMediaPayload = {
+  title: string;
+  media_type: MediaType;
+  season_number: number;
+  episode_number: number;
+};
+
+export type UpdateTaggingPayload = {
+  company_id: number | null;
+  series_id: number | null;
+  person_ids: number[];
+  category_ids: number[];
+  tag_ids: number[];
+};
+
+export type PlayerContextResponse = {
+  item: MediaItem;
+  prev_episode_id: number | null;
+  next_episode_id: number | null;
+};
+
+export type BulkTaggingPayload = {
+  set_company: boolean;
+  company_id: number | null;
+  set_series: boolean;
+  series_id: number | null;
+  person_ids: number[];
+  category_ids: number[];
+  tag_ids: number[];
+};
+
+export type BulkMoveFailure = {
+  media_id: number;
+  error: string;
+};
+
+export type BulkMoveResponse = {
+  requested: number;
+  moved: number;
+  already_managed: number;
+  failed: BulkMoveFailure[];
+};
+
+export const emptyConfig: AppConfig = {
+  server: {
+    host: "127.0.0.1",
+    port: 5000,
+  },
+  paths: {
+    sources: [],
+    library_root: "",
+    views_root: "",
+    preview_cache: "./data/previews",
+  },
+  tools: {
+    ffmpeg: "./bin/ffmpeg.exe",
+    ffprobe: "./bin/ffprobe.exe",
+    vlc: "",
+  },
+  mode: {
+    portable: true,
+  },
+};

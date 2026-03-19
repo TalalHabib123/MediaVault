@@ -1,0 +1,22 @@
+{
+  "server": {
+    "host": "127.0.0.1",
+    "port": 5000
+  },
+  "paths": {
+    "sources": [
+      "C:\\Users\\talal\\Videos\\Chernobyl.COMPLETE.Season.1.S01.1080p.AMZN.WEB-DL.x265-HETeam"
+    ],
+    "library_root": "E:\\home",
+    "views_root": "",
+    "preview_cache": "./data/previews"
+  },
+  "tools": {
+    "ffmpeg": "./bin/ffmpeg.exe",
+    "ffprobe": "./bin/ffprobe.exe",
+    "vlc": "C:\\Program Files\\VideoLAN\\VLC\\vlc.exe"
+  },
+  "mode": {
+    "portable": true
+  }
+}
