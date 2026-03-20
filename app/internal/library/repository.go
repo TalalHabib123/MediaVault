@@ -449,3 +449,211 @@ func normalizeMediaType(value string) string {
 		return "video"
 	}
 }
+
+func (r *Repository) SearchTagged(params SearchTaggedParams) ([]MediaItem, int, error) {
+	page := params.Page
+	if page <= 0 {
+		page = 1
+	}
+
+	pageSize := params.PageSize
+	if pageSize <= 0 {
+		pageSize = 20
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+
+	offset := (page - 1) * pageSize
+
+	sortDir := "DESC"
+	if strings.EqualFold(strings.TrimSpace(params.SortDir), "asc") {
+		sortDir = "ASC"
+	}
+
+	taggedExpr := `
+		CASE
+			WHEN media_items.company_id IS NOT NULL
+				OR media_items.series_id IS NOT NULL
+				OR EXISTS (SELECT 1 FROM media_people mp WHERE mp.media_id = media_items.id)
+				OR EXISTS (SELECT 1 FROM media_categories mc WHERE mc.media_id = media_items.id)
+				OR EXISTS (SELECT 1 FROM media_tags mt WHERE mt.media_id = media_items.id)
+			THEN 1
+			ELSE 0
+		END
+	`
+
+	joins := `
+		FROM media_items
+		LEFT JOIN companies ON companies.id = media_items.company_id
+		LEFT JOIN series ON series.id = media_items.series_id
+	`
+
+	whereParts := []string{taggedExpr + ` = 1`}
+	args := []any{}
+
+	if q := strings.TrimSpace(params.Query); q != "" {
+		like := "%" + strings.ToLower(q) + "%"
+		whereParts = append(whereParts, `
+			(
+				LOWER(media_items.title) LIKE ?
+				OR LOWER(media_items.file_name) LIKE ?
+				OR LOWER(media_items.source_path) LIKE ?
+				OR LOWER(COALESCE(companies.name, '')) LIKE ?
+				OR LOWER(COALESCE(series.name, '')) LIKE ?
+			)
+		`)
+		args = append(args, like, like, like, like, like)
+	}
+
+	if len(params.MediaTypes) > 0 {
+		placeholders := buildPlaceholders(len(params.MediaTypes))
+		whereParts = append(whereParts, `media_items.media_type IN (`+placeholders+`)`)
+		for _, value := range params.MediaTypes {
+			args = append(args, value)
+		}
+	}
+
+	if len(params.CompanyIDs) > 0 {
+		placeholders := buildPlaceholders(len(params.CompanyIDs))
+		whereParts = append(whereParts, `media_items.company_id IN (`+placeholders+`)`)
+		for _, value := range params.CompanyIDs {
+			args = append(args, value)
+		}
+	}
+
+	if len(params.SeriesIDs) > 0 {
+		placeholders := buildPlaceholders(len(params.SeriesIDs))
+		whereParts = append(whereParts, `media_items.series_id IN (`+placeholders+`)`)
+		for _, value := range params.SeriesIDs {
+			args = append(args, value)
+		}
+	}
+
+	if len(params.PersonIDs) > 0 {
+		placeholders := buildPlaceholders(len(params.PersonIDs))
+		whereParts = append(whereParts, `
+			EXISTS (
+				SELECT 1
+				FROM media_people mp
+				WHERE mp.media_id = media_items.id
+				  AND mp.person_id IN (`+placeholders+`)
+			)
+		`)
+		for _, value := range params.PersonIDs {
+			args = append(args, value)
+		}
+	}
+
+	if len(params.TagIDs) > 0 {
+		placeholders := buildPlaceholders(len(params.TagIDs))
+		whereParts = append(whereParts, `
+			EXISTS (
+				SELECT 1
+				FROM media_tags mt
+				WHERE mt.media_id = media_items.id
+				  AND mt.tag_id IN (`+placeholders+`)
+			)
+		`)
+		for _, value := range params.TagIDs {
+			args = append(args, value)
+		}
+	}
+
+	if len(params.MainCategoryIDs) > 0 {
+		mainPH := buildPlaceholders(len(params.MainCategoryIDs))
+		whereParts = append(whereParts, `
+			EXISTS (
+				SELECT 1
+				FROM media_categories mc
+				JOIN categories c ON c.id = mc.category_id
+				WHERE mc.media_id = media_items.id
+				  AND (c.id IN (`+mainPH+`) OR c.parent_id IN (`+mainPH+`))
+			)
+		`)
+		for _, value := range params.MainCategoryIDs {
+			args = append(args, value)
+		}
+		for _, value := range params.MainCategoryIDs {
+			args = append(args, value)
+		}
+	}
+
+	if len(params.SubCategoryIDs) > 0 {
+		subPH := buildPlaceholders(len(params.SubCategoryIDs))
+		whereParts = append(whereParts, `
+			EXISTS (
+				SELECT 1
+				FROM media_categories mc
+				JOIN categories c ON c.id = mc.category_id
+				WHERE mc.media_id = media_items.id
+				  AND c.id IN (`+subPH+`)
+			)
+		`)
+		for _, value := range params.SubCategoryIDs {
+			args = append(args, value)
+		}
+	}
+
+	whereSQL := strings.Join(whereParts, " AND ")
+
+	countQuery := `SELECT COUNT(*) ` + joins + ` WHERE ` + whereSQL
+	var total int
+	if err := r.db.Get(&total, countQuery, args...); err != nil {
+		return []MediaItem{}, 0, err
+	}
+
+	listQuery := `
+		SELECT
+			media_items.id,
+			media_items.title,
+			media_items.media_type,
+			media_items.source_path,
+			media_items.canonical_path,
+			media_items.file_name,
+			media_items.extension,
+			media_items.duration_seconds,
+			media_items.width,
+			media_items.height,
+			media_items.video_codec,
+			media_items.audio_codec,
+			media_items.filesize_bytes,
+			media_items.season_number,
+			media_items.episode_number,
+			media_items.type_source,
+			media_items.title_source,
+			media_items.sequence_source,
+			media_items.company_id,
+			COALESCE(companies.name, '') AS company_name,
+			media_items.series_id,
+			COALESCE(series.name, '') AS series_name,
+			` + taggedExpr + ` AS is_tagged,
+			media_items.created_at,
+			media_items.updated_at
+	` + joins + `
+		WHERE ` + whereSQL + `
+		ORDER BY media_items.updated_at ` + sortDir + `, media_items.id ` + sortDir + `
+		LIMIT ? OFFSET ?
+	`
+
+	listArgs := append(args, pageSize, offset)
+
+	items := []MediaItem{}
+	if err := r.db.Select(&items, listQuery, listArgs...); err != nil {
+		return []MediaItem{}, 0, err
+	}
+
+	return items, total, nil
+}
+
+func buildPlaceholders(count int) string {
+	if count <= 0 {
+		return ""
+	}
+
+	parts := make([]string, count)
+	for i := 0; i < count; i++ {
+		parts[i] = "?"
+	}
+	return strings.Join(parts, ", ")
+}

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { MediaItem } from "../types";
+import { apiFetch } from "../lib/api";
 
 type Props = {
   item: MediaItem;
@@ -20,6 +21,8 @@ export default function LibraryCard({
   const [hovered, setHovered] = useState(false);
   const [videoMounted, setVideoMounted] = useState(false);
 
+  const [toolActionBusy, setToolActionBusy] = useState(false);
+
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
@@ -36,10 +39,28 @@ export default function LibraryCard({
     }
   }, [hovered, videoMounted]);
 
+  async function onOpenInVLC() {
+    if (!item) return;
+
+    try {
+      setToolActionBusy(true);
+
+      await apiFetch<{ ok: boolean }>(`/api/library/${item.id}/open-vlc`, {
+        method: "POST",
+      });
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "Failed to open in VLC");
+    } finally {
+      setToolActionBusy(false);
+    }
+  }
+
   return (
     <div
       className={`overflow-hidden rounded-2xl border bg-zinc-900 transition ${
-        selected ? "border-emerald-500/40 shadow-[0_0_0_1px_rgba(16,185,129,0.25)]" : "border-zinc-800"
+        selected
+          ? "border-emerald-500/40 shadow-[0_0_0_1px_rgba(16,185,129,0.25)]"
+          : "border-zinc-800"
       }`}
       onMouseEnter={() => {
         setVideoMounted(true);
@@ -74,9 +95,12 @@ export default function LibraryCard({
         <div className="pointer-events-none absolute left-3 top-3 flex flex-wrap gap-2">
           <Badge>{formatMediaType(item.media_type)}</Badge>
           <StatusBadge tagged={item.is_tagged} />
-          {item.media_type === "series_episode" && item.season_number > 0 && item.episode_number > 0 ? (
+          {item.media_type === "series_episode" &&
+          item.season_number > 0 &&
+          item.episode_number > 0 ? (
             <Badge>
-              S{String(item.season_number).padStart(2, "0")}E{String(item.episode_number).padStart(2, "0")}
+              S{String(item.season_number).padStart(2, "0")}E
+              {String(item.episode_number).padStart(2, "0")}
             </Badge>
           ) : null}
         </div>
@@ -90,27 +114,35 @@ export default function LibraryCard({
           Select
         </label>
 
-        <div className="pointer-events-none absolute bottom-3 right-3 rounded-full bg-black/60 px-2.5 py-1 text-[11px] text-zinc-200 backdrop-blur">
-          5-point preview
-        </div>
       </div>
 
       <div className="p-4">
-        <h3 className="truncate text-base font-medium text-zinc-100">{item.title}</h3>
-        <div className="mt-1 truncate text-sm text-zinc-400">{item.file_name}</div>
+        <h3 className="truncate text-base font-medium text-zinc-100">
+          {item.title}
+        </h3>
+        <div className="mt-1 truncate text-sm text-zinc-400">
+          {item.file_name}
+        </div>
 
         {item.series_name ? (
-          <div className="mt-2 truncate text-sm text-zinc-500">Series: {item.series_name}</div>
+          <div className="mt-2 truncate text-sm text-zinc-500">
+            Series: {item.series_name}
+          </div>
         ) : null}
 
         {item.company_name ? (
-          <div className="mt-1 truncate text-sm text-zinc-500">Company: {item.company_name}</div>
+          <div className="mt-1 truncate text-sm text-zinc-500">
+            Company: {item.company_name}
+          </div>
         ) : null}
 
         <div className="mt-3 grid gap-1 text-xs text-zinc-500">
           <div>Duration: {formatDuration(item.duration_seconds)}</div>
           <div>
-            Resolution: {item.width > 0 && item.height > 0 ? `${item.width}x${item.height}` : "Unknown"}
+            Resolution:{" "}
+            {item.width > 0 && item.height > 0
+              ? `${item.width}x${item.height}`
+              : "Unknown"}
           </div>
           <div>Size: {formatBytes(item.filesize_bytes)}</div>
         </div>
@@ -125,9 +157,17 @@ export default function LibraryCard({
 
           <button
             onClick={onOpenPlayer}
-            className="rounded-lg bg-white px-3 py-2 text-sm text-black"
+            className="rounded-lg bg-white px-3 py-2 text-sm text-black hover:bg-gray-200 *:disabled:bg-gray-400 disabled:text-gray-700 disabled:cursor-not-allowed"
           >
-            Open Player
+           Player
+          </button>
+
+          <button
+            onClick={onOpenInVLC}
+            disabled={toolActionBusy}
+            className="rounded-lg bg-orange-500 px-3 py-2 text-sm text-zinc-100 hover:bg-orange-600 disabled:opacity-50"
+          >
+            VLC
           </button>
         </div>
       </div>

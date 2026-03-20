@@ -644,6 +644,61 @@ func NewRouter(s *Server) http.Handler {
 		writeJSON(w, http.StatusOK, item)
 	})
 
+	r.Get("/api/search/tagged", func(w http.ResponseWriter, r *http.Request) {
+		q := strings.TrimSpace(r.URL.Query().Get("q"))
+		sortDir := strings.TrimSpace(r.URL.Query().Get("sort_dir"))
+
+		page := 1
+		if value := r.URL.Query().Get("page"); value != "" {
+			if parsed, err := strconv.Atoi(value); err == nil && parsed > 0 {
+				page = parsed
+			}
+		}
+
+		pageSize := 20
+		if value := r.URL.Query().Get("page_size"); value != "" {
+			if parsed, err := strconv.Atoi(value); err == nil && parsed > 0 {
+				pageSize = parsed
+			}
+		}
+
+		params := library.SearchTaggedParams{
+			Query:           q,
+			Page:            page,
+			PageSize:        pageSize,
+			SortDir:         sortDir,
+			MediaTypes:      parseCSVStrings(r.URL.Query().Get("media_types")),
+			CompanyIDs:      parseCSVInt64(r.URL.Query().Get("company_ids")),
+			PersonIDs:       parseCSVInt64(r.URL.Query().Get("person_ids")),
+			SeriesIDs:       parseCSVInt64(r.URL.Query().Get("series_ids")),
+			MainCategoryIDs: parseCSVInt64(r.URL.Query().Get("main_category_ids")),
+			SubCategoryIDs:  parseCSVInt64(r.URL.Query().Get("sub_category_ids")),
+			TagIDs:          parseCSVInt64(r.URL.Query().Get("tag_ids")),
+		}
+
+		items, total, err := s.LibraryRepo.SearchTagged(params)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{
+				"error": err.Error(),
+			})
+			return
+		}
+
+		totalPages := 0
+		if total > 0 {
+			totalPages = (total + pageSize - 1) / pageSize
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"items":       items,
+			"total":       total,
+			"page":        page,
+			"page_size":   pageSize,
+			"total_pages": totalPages,
+			"sort_dir":    strings.ToLower(sortDir),
+		})
+	})
+
 	return r
 }
 
@@ -659,4 +714,44 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(value)
+}
+
+func parseCSVInt64(value string) []int64 {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return []int64{}
+	}
+
+	parts := strings.Split(value, ",")
+	out := make([]int64, 0, len(parts))
+
+	for _, part := range parts {
+		n, err := strconv.ParseInt(strings.TrimSpace(part), 10, 64)
+		if err != nil || n <= 0 {
+			continue
+		}
+		out = append(out, n)
+	}
+
+	return out
+}
+
+func parseCSVStrings(value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return []string{}
+	}
+
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		out = append(out, part)
+	}
+
+	return out
 }

@@ -39,3 +39,17 @@ type UpdateEditableInput struct {
 	SeasonNumber  int    `json:"season_number"`
 	EpisodeNumber int    `json:"episode_number"`
 }
+
+type SearchTaggedParams struct {
+	Query           string
+	Page            int
+	PageSize        int
+	SortDir         string
+	MediaTypes      []string
+	CompanyIDs      []int64
+	PersonIDs       []int64
+	SeriesIDs       []int64
+	MainCategoryIDs []int64
+	SubCategoryIDs  []int64
+	TagIDs          []int64
+}

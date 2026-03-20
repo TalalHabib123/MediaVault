@@ -160,6 +160,15 @@ export type BulkMoveResponse = {
   failed: BulkMoveFailure[];
 };
 
+export type SearchTaggedResponse = {
+  items: MediaItem[];
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+  sort_dir: "asc" | "desc" | string;
+};
+
 export const emptyConfig: AppConfig = {
   server: {
     host: "127.0.0.1",

@@ -10,12 +10,13 @@ import { apiFetch } from "./lib/api";
 import MetadataManager from "./components/MetadataManager";
 import MediaDetailDrawer from "./components/MediaDetailDrawer";
 
-import { BrowserRouter, Routes, Route, useNavigate } from "react-router-dom";
+import { BrowserRouter, Routes, Route, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import LibraryCard from "./components/LibraryCard";
 import PlayerPage from "./pages/PlayerPage";
 
 import BulkTagDrawer from "./components/BulkTagDrawer";
 import type { BulkMoveResponse, BulkTaggingPayload } from "./types";
+import TaggedSearchPage from "./pages/TaggedSearchPage";
 
 import type {
   AppConfig,
@@ -34,7 +35,7 @@ import type {
 } from "./types";
 import { emptyConfig } from "./types";
 
-type TabKey = "library" | "metadata" | "settings";
+type TabKey = "library" | "metadata" | "settings" | "search";
 
 const emptyOptions: MetadataOptions = {
   companies: [],
@@ -44,10 +45,71 @@ const emptyOptions: MetadataOptions = {
   series: [],
 };
 
-function DashboardPage() {
-  const navigate = useNavigate();
+function parseDashboardTab(value: string | null): "library" | "search" | "metadata" | "settings" {
+  if (value === "search" || value === "metadata" || value === "settings") return value;
+  return "library";
+}
 
-  const [activeTab, setActiveTab] = useState<TabKey>("library");
+function setStringParam(params: URLSearchParams, key: string, value: string) {
+  if (!value.trim()) {
+    params.delete(key);
+    return;
+  }
+  params.set(key, value);
+}
+
+function DashboardPage() {
+  // const navigate = useNavigate();
+
+  // const [activeTab, setActiveTab] = useState<TabKey>("library");
+
+  const navigate = useNavigate();
+const location = useLocation();
+const [searchParams, setSearchParams] = useSearchParams();
+
+const activeTab = parseDashboardTab(searchParams.get("tab"));
+
+const librarySearch = searchParams.get("lib_q") ?? "";
+const mediaTypeFilter = searchParams.get("lib_type") ?? "all";
+const taggedStatusFilter = searchParams.get("lib_tagged") ?? "all";
+
+function updateDashboardParams(mutator: (params: URLSearchParams) => void) {
+  const next = new URLSearchParams(searchParams);
+  mutator(next);
+  setSearchParams(next, { replace: true });
+}
+
+function setActiveTab(next: TabKey) {
+  updateDashboardParams((params) => {
+    params.set("tab", next);
+  });
+}
+
+function setLibrarySearch(nextValue: string) {
+  updateDashboardParams((params) => {
+    setStringParam(params, "lib_q", nextValue);
+  });
+}
+
+function setLibraryMediaType(nextValue: string) {
+  updateDashboardParams((params) => {
+    if (nextValue === "all") {
+      params.delete("lib_type");
+    } else {
+      params.set("lib_type", nextValue);
+    }
+  });
+}
+
+function setLibraryTaggedStatus(nextValue: string) {
+  updateDashboardParams((params) => {
+    if (nextValue === "all") {
+      params.delete("lib_tagged");
+    } else {
+      params.set("lib_tagged", nextValue);
+    }
+  });
+}
 
   const [config, setConfig] = useState<AppConfig>(emptyConfig);
   const [configLoading, setConfigLoading] = useState(true);
@@ -69,9 +131,9 @@ function DashboardPage() {
   const [detailSaving, setDetailSaving] = useState(false);
   const [taggingSaving, setTaggingSaving] = useState(false);
 
-  const [search, setSearch] = useState("");
-  const [mediaTypeFilter, setMediaTypeFilter] = useState("all");
-  const [taggedStatusFilter, setTaggedStatusFilter] = useState("all");
+  // const [search, setSearch] = useState("");
+  // const [mediaTypeFilter, setMediaTypeFilter] = useState("all");
+  // const [taggedStatusFilter, setTaggedStatusFilter] = useState("untagged");
 
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
@@ -103,8 +165,9 @@ function DashboardPage() {
   }, [library]);
 
   function openPlayer(id: number) {
-    navigate(`/player/${id}`);
-  }
+  const returnTo = `${location.pathname}${location.search}`;
+  navigate(`/player/${id}?return_to=${encodeURIComponent(returnTo)}`);
+}
 
   function toggleSelected(id: number) {
     setSelectedIds((prev) =>
@@ -141,6 +204,24 @@ function DashboardPage() {
       setError(err instanceof Error ? err.message : "Bulk tagging failed");
     } finally {
       setBulkTagSaving(false);
+    }
+  }
+
+  async function openInVLCById(id: number) {
+    try {
+      setToolActionBusy(true);
+      setError("");
+      setMessage("");
+
+      await apiFetch<{ ok: boolean }>(`/api/library/${id}/open-vlc`, {
+        method: "POST",
+      });
+
+      setMessage("Opened in VLC.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to open in VLC");
+    } finally {
+      setToolActionBusy(false);
     }
   }
 
@@ -228,22 +309,21 @@ function DashboardPage() {
       setToolActionBusy(false);
     }
   }
+const visibleItems = useMemo(() => {
+  const safeLibrary = Array.isArray(library) ? library : [];
+  const trimmed = librarySearch.trim().toLowerCase();
 
-  const visibleItems = useMemo(() => {
-    const safeLibrary = Array.isArray(library) ? library : [];
-    const trimmed = search.trim().toLowerCase();
+  if (!trimmed) return safeLibrary;
 
-    if (!trimmed) return safeLibrary;
-
-    return safeLibrary.filter((item) => {
-      return (
-        item.title.toLowerCase().includes(trimmed) ||
-        item.file_name.toLowerCase().includes(trimmed) ||
-        item.source_path.toLowerCase().includes(trimmed) ||
-        item.company_name.toLowerCase().includes(trimmed)
-      );
-    });
-  }, [library, search]);
+  return safeLibrary.filter((item) => {
+    return (
+      item.title.toLowerCase().includes(trimmed) ||
+      item.file_name.toLowerCase().includes(trimmed) ||
+      item.source_path.toLowerCase().includes(trimmed) ||
+      item.company_name.toLowerCase().includes(trimmed)
+    );
+  });
+}, [library, librarySearch]);
 
   async function loadSettings() {
     try {
@@ -599,6 +679,12 @@ function DashboardPage() {
               Library
             </TabButton>
             <TabButton
+              active={activeTab === "search"}
+              onClick={() => setActiveTab("search")}
+            >
+              Search
+            </TabButton>
+            <TabButton
               active={activeTab === "metadata"}
               onClick={() => setActiveTab("metadata")}
             >
@@ -632,10 +718,10 @@ function DashboardPage() {
               total={libraryTotal}
               mediaType={mediaTypeFilter}
               taggedStatus={taggedStatusFilter}
-              onMediaTypeChange={setMediaTypeFilter}
-              onTaggedStatusChange={setTaggedStatusFilter}
-              search={search}
-              onSearchChange={setSearch}
+              onMediaTypeChange={setLibraryMediaType}
+              onTaggedStatusChange={setLibraryTaggedStatus}
+              search={librarySearch}
+              onSearchChange={setLibrarySearch}
               loading={libraryLoading}
               onRefresh={loadLibrary}
               onScan={runScan}
@@ -651,6 +737,13 @@ function DashboardPage() {
               onOpenBulkTagging={() => setBulkTagOpen(true)}
               onBulkMove={bulkMoveSelected}
               bulkMoving={bulkMoving}
+            />
+          ) : activeTab === "search" ? (
+            <TaggedSearchPage
+              options={options}
+              onOpenPlayer={openPlayer}
+              onOpenVLC={openInVLCById}
+              onEditTag={openItem}
             />
           ) : activeTab === "metadata" ? (
             <MetadataManager
