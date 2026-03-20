@@ -3,3 +3,6 @@
 data/**
 
 logs/**
+
+release/
+app/internal/webui/dist/

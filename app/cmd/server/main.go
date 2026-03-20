@@ -15,6 +15,7 @@ import (
 	"mediavault/internal/media/scanner"
 	"mediavault/internal/metadata"
 	"mediavault/internal/system/actions"
+	"mediavault/internal/webui"
 )
 
 func main() {
@@ -53,10 +54,15 @@ func main() {
 		Actions:       actionsService,
 	})
 
+	handler, err := webui.NewHandler(router)
+	if err != nil {
+		log.Fatalf("failed to create embedded web handler: %v", err)
+	}
+
 	addr := cfg.Server.Host + ":" + itoa(cfg.Server.Port)
 
 	log.Printf("MediaVault server listening on http://%s", addr)
-	if err := http.ListenAndServe(addr, router); err != nil {
+	if err := http.ListenAndServe(addr, handler); err != nil {
 		log.Fatalf("server stopped: %v", err)
 	}
 }
