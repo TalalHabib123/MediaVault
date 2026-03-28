@@ -22,6 +22,8 @@ import type {
   AppConfig,
   Category,
   Company,
+  DeleteMediaPayload,
+  DeleteMediaResponse,
   LibraryResponse,
   MediaDetailResponse,
   MediaItem,
@@ -141,6 +143,7 @@ function setLibraryTaggedStatus(nextValue: string) {
   const [newSource, setNewSource] = useState("");
 
   const [moving, setMoving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [bulkTagOpen, setBulkTagOpen] = useState(false);
@@ -622,6 +625,43 @@ const visibleItems = useMemo(() => {
     }
   }
 
+  async function deleteSelectedMedia(payload: DeleteMediaPayload) {
+    if (!selectedDetail) return;
+
+    const mediaID = selectedDetail.item.id;
+
+    try {
+      setDeleting(true);
+      setError("");
+      setMessage("");
+
+      const data = await apiFetch<DeleteMediaResponse>(
+        `/api/library/${mediaID}/delete`,
+        {
+          method: "POST",
+          body: JSON.stringify(payload),
+        },
+      );
+
+      setSelectedIds((prev) => prev.filter((id) => id !== mediaID));
+      setSelectedDetail(null);
+
+      if (data.mode === "delete_file") {
+        setMessage("Deleted file and removed the media item from the library.");
+      } else {
+        setMessage(
+          "Removed the media item from the library database. Files still in scanned source folders will return after a rescan.",
+        );
+      }
+
+      await loadLibrary();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to delete media");
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   function addSource() {
     const value = newSource.trim();
     if (!value) return;
@@ -775,11 +815,13 @@ const visibleItems = useMemo(() => {
         savingDetails={detailSaving}
         savingTagging={taggingSaving}
         moving={moving}
+        deleting={deleting}
         toolActionBusy={toolActionBusy}
         onClose={() => setSelectedDetail(null)}
         onSaveDetails={saveItem}
         onSaveTagging={saveTagging}
         onMoveToLibrary={moveSelectedToLibrary}
+        onDelete={deleteSelectedMedia}
         onOpenInVLC={openSelectedInVLC}
         onRevealFile={revealSelectedFile}
         onCreateCompany={createCompany}

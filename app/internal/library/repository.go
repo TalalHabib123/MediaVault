@@ -368,6 +368,23 @@ func (r *Repository) UpdateManagedPath(id int64, path string, fileName string) e
 	return nil
 }
 
+func (r *Repository) DeleteByID(id int64) error {
+	result, err := r.db.Exec(`DELETE FROM media_items WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return fmt.Errorf("media item not found")
+	}
+
+	return nil
+}
+
 func (r *Repository) GetEpisodeNavigation(id int64) (*int64, *int64, error) {
 	item, err := r.GetByID(id)
 	if err != nil {

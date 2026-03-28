@@ -10,6 +10,7 @@ import (
 	"mediavault/internal/config"
 	"mediavault/internal/db"
 	"mediavault/internal/library"
+	"mediavault/internal/media/deletion"
 	"mediavault/internal/media/organizer"
 	"mediavault/internal/media/previews"
 	"mediavault/internal/media/scanner"
@@ -42,6 +43,7 @@ func main() {
 	scanService := scanner.NewService(cfgService, libraryRepo)
 	organizerService := organizer.NewService(cfgService, libraryRepo)
 	previewService := previews.NewService(cfgService)
+	deletionService := deletion.NewService(cfgService, libraryRepo, previewService)
 	actionsService := actions.NewService(cfgService)
 
 	router := api.NewRouter(&api.Server{
@@ -51,6 +53,7 @@ func main() {
 		Scanner:       scanService,
 		Organizer:     organizerService,
 		Previewer:     previewService,
+		Deletion:      deletionService,
 		Actions:       actionsService,
 	})
 

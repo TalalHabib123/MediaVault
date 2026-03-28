@@ -56,6 +56,8 @@ A lightweight local-first web application for managing movies, series, and gener
   - Open directly in VLC
 - File actions:
   - Reveal in folder
+  - Permanently delete file and remove it from the database
+  - Database-only cleanup for orphaned or missing entries
   - Rebuild generated views
 - Settings:
   - Source folders
@@ -82,6 +84,8 @@ Generated folder views may be created for browsing by:
 - actor
 - category
 - series
+
+DB-only cleanup is intended for stale or orphaned records. If the media file still exists in a scanned source folder, a future scan will add it back.
 
 ## Modes
 

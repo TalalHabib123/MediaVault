@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"mime"
 	"net/http"
 	"os"
@@ -14,6 +15,7 @@ import (
 
 	"mediavault/internal/config"
 	"mediavault/internal/library"
+	"mediavault/internal/media/deletion"
 	"mediavault/internal/media/organizer"
 	"mediavault/internal/media/previews"
 	"mediavault/internal/media/scanner"
@@ -28,6 +30,7 @@ type Server struct {
 	Scanner       *scanner.Service
 	Organizer     *organizer.Service
 	Previewer     *previews.Service
+	Deletion      *deletion.Service
 	Actions       *actions.Service
 }
 
@@ -374,6 +377,48 @@ func NewRouter(s *Server) http.Handler {
 			"item":        item,
 			"assignments": assignments,
 			"result":      result,
+		})
+	})
+
+	r.Post("/api/library/{id}/delete", func(w http.ResponseWriter, r *http.Request) {
+		id, ok := parseIDParam(chi.URLParam(r, "id"))
+		if !ok {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"error": "invalid media id",
+			})
+			return
+		}
+
+		var payload struct {
+			Mode string `json:"mode"`
+		}
+
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"error": "invalid json body",
+			})
+			return
+		}
+
+		result, err := s.Deletion.Delete(id, payload.Mode)
+		if err != nil {
+			status := http.StatusBadRequest
+			var deleteErr *deletion.Error
+			if errors.As(err, &deleteErr) && deleteErr.Status > 0 {
+				status = deleteErr.Status
+			}
+			writeJSON(w, status, map[string]any{
+				"error": err.Error(),
+			})
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":                    true,
+			"media_id":              result.MediaID,
+			"mode":                  result.Mode,
+			"file_deleted":          result.FileDeleted,
+			"preview_cache_cleaned": result.PreviewCacheCleaned,
 		})
 	})
 

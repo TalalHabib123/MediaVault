@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import type {
   Category,
   Company,
+  DeleteMediaMode,
+  DeleteMediaPayload,
   MediaDetailResponse,
   MediaType,
   MetadataOptions,
@@ -18,10 +20,12 @@ type Props = {
   savingDetails: boolean;
   savingTagging: boolean;
   moving: boolean;
+  deleting: boolean;
   onClose: () => void;
   onSaveDetails: (payload: UpdateMediaPayload) => Promise<void>;
   onSaveTagging: (payload: UpdateTaggingPayload) => Promise<void>;
   onMoveToLibrary: () => Promise<void>;
+  onDelete: (payload: DeleteMediaPayload) => Promise<void>;
   onCreateCompany: (name: string) => Promise<Company>;
   onCreatePerson: (name: string) => Promise<Person>;
   onCreateCategory: (payload: {
@@ -45,10 +49,12 @@ export default function MediaDetailDrawer({
   savingDetails,
   savingTagging,
   moving,
+  deleting,
   onClose,
   onSaveDetails,
   onSaveTagging,
   onMoveToLibrary,
+  onDelete,
   onCreateCompany,
   onCreatePerson,
   onCreateCategory,
@@ -76,6 +82,8 @@ export default function MediaDetailDrawer({
   const [newSubCategory, setNewSubCategory] = useState("");
   const [subParentId, setSubParentId] = useState<number | "">("");
   const [newTag, setNewTag] = useState("");
+  const [deleteMode, setDeleteMode] = useState<DeleteMediaMode>("delete_file");
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   const [busyCreate, setBusyCreate] = useState("");
 
@@ -104,6 +112,8 @@ export default function MediaDetailDrawer({
         ? detail.assignments.tag_ids
         : [],
     );
+    setDeleteMode("delete_file");
+    setConfirmDelete(false);
   }, [detail]);
 
   const mainCategories = useMemo(
@@ -226,6 +236,15 @@ export default function MediaDetailDrawer({
     } finally {
       setBusyCreate("");
     }
+  }
+
+  function updateDeleteMode(nextMode: DeleteMediaMode) {
+    setDeleteMode(nextMode);
+    setConfirmDelete(false);
+  }
+
+  async function confirmDeleteAction() {
+    await onDelete({ mode: deleteMode });
   }
 
   return (
@@ -546,6 +565,115 @@ export default function MediaDetailDrawer({
               >
                 {moving ? "Moving..." : "Move To Library"}
               </button>
+            </div>
+          </section>
+
+          <section className="rounded-2xl border border-red-500/30 bg-red-500/10 p-5">
+            <div className="flex flex-col gap-4">
+              <div>
+                <h3 className="text-lg font-medium text-red-100">
+                  Danger Zone
+                </h3>
+                <p className="mt-1 text-sm text-red-200/80">
+                  This permanently affects the library record. File deletion is
+                  irreversible.
+                </p>
+              </div>
+
+              <div className="grid gap-3">
+                <button
+                  type="button"
+                  onClick={() => updateDeleteMode("delete_file")}
+                  disabled={deleting}
+                  className={`rounded-xl border px-4 py-3 text-left transition ${
+                    deleteMode === "delete_file"
+                      ? "border-red-400/50 bg-red-500/15 text-red-100"
+                      : "border-zinc-700 bg-zinc-950 text-zinc-200 hover:bg-zinc-900"
+                  }`}
+                >
+                  <div className="text-sm font-medium">
+                    Delete File + Remove From Library
+                  </div>
+                  <div className="mt-1 text-xs text-zinc-400">
+                    Recommended. Deletes the current media file from disk, then
+                    removes the database entry and related tagging assignments.
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => updateDeleteMode("db_only")}
+                  disabled={deleting}
+                  className={`rounded-xl border px-4 py-3 text-left transition ${
+                    deleteMode === "db_only"
+                      ? "border-amber-400/50 bg-amber-500/10 text-amber-100"
+                      : "border-zinc-700 bg-zinc-950 text-zinc-200 hover:bg-zinc-900"
+                  }`}
+                >
+                  <div className="text-sm font-medium">DB Cleanup Only</div>
+                  <div className="mt-1 text-xs text-zinc-400">
+                    Removes only the database record. Use this for missing or
+                    orphaned entries, not normal library deletion.
+                  </div>
+                </button>
+              </div>
+
+              <div
+                className={`rounded-xl border px-4 py-3 text-sm ${
+                  deleteMode === "delete_file"
+                    ? "border-red-500/30 bg-red-500/10 text-red-100"
+                    : "border-amber-500/30 bg-amber-500/10 text-amber-100"
+                }`}
+              >
+                {deleteMode === "delete_file"
+                  ? "This will permanently delete the current media file from disk and remove it from the database."
+                  : "If the file still exists inside a scanned source folder, the next scan will add it back to the database."}
+              </div>
+
+              {confirmDelete ? (
+                <div className="rounded-xl border border-red-500/30 bg-zinc-950 p-4">
+                  <div className="text-sm text-zinc-100">
+                    {deleteMode === "delete_file"
+                      ? "Confirm permanent file deletion and library cleanup for this item."
+                      : "Confirm database-only cleanup for this item."}
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-3">
+                    <button
+                      type="button"
+                      onClick={confirmDeleteAction}
+                      disabled={deleting}
+                      className="rounded-lg bg-red-500 px-4 py-2 text-sm font-medium text-white hover:bg-red-600 disabled:opacity-60"
+                    >
+                      {deleting
+                        ? "Deleting..."
+                        : deleteMode === "delete_file"
+                          ? "Confirm Delete File"
+                          : "Confirm DB Cleanup"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setConfirmDelete(false)}
+                      disabled={deleting}
+                      className="rounded-lg border border-zinc-700 px-4 py-2 text-sm text-zinc-200 hover:bg-zinc-900 disabled:opacity-60"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => setConfirmDelete(true)}
+                    disabled={deleting}
+                    className="rounded-lg border border-red-400/40 px-5 py-2.5 text-sm text-red-100 hover:bg-red-500/10 disabled:opacity-60"
+                  >
+                    {deleteMode === "delete_file"
+                      ? "Review Permanent Delete"
+                      : "Review DB Cleanup"}
+                  </button>
+                </div>
+              )}
             </div>
           </section>
 

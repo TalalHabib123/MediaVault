@@ -132,6 +132,20 @@ export type UpdateTaggingPayload = {
   tag_ids: number[];
 };
 
+export type DeleteMediaMode = "delete_file" | "db_only";
+
+export type DeleteMediaPayload = {
+  mode: DeleteMediaMode;
+};
+
+export type DeleteMediaResponse = {
+  ok: boolean;
+  media_id: number;
+  mode: DeleteMediaMode;
+  file_deleted: boolean;
+  preview_cache_cleaned: boolean;
+};
+
 export type PlayerContextResponse = {
   item: MediaItem;
   prev_episode_id: number | null;
