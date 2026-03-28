@@ -42,7 +42,7 @@ func main() {
 	metadataRepo := metadata.NewRepository(sqliteDB)
 	scanService := scanner.NewService(cfgService, libraryRepo)
 	organizerService := organizer.NewService(cfgService, libraryRepo)
-	previewService := previews.NewService(cfgService)
+	previewService := previews.NewService(cfgService, libraryRepo)
 	deletionService := deletion.NewService(cfgService, libraryRepo, previewService)
 	actionsService := actions.NewService(cfgService)
 

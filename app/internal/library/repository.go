@@ -17,7 +17,7 @@ func NewRepository(db *sqlx.DB) *Repository {
 	return &Repository{db: db}
 }
 
-func (r *Repository) Upsert(item *MediaItem) (string, error) {
+func (r *Repository) Upsert(item *MediaItem) (int64, string, error) {
 	var existingID int64
 	err := r.db.Get(&existingID, `SELECT id FROM media_items WHERE source_path = ? LIMIT 1`, item.SourcePath)
 	existed := err == nil
@@ -124,13 +124,17 @@ func (r *Repository) Upsert(item *MediaItem) (string, error) {
 
 	_, err = r.db.NamedExec(query, item)
 	if err != nil {
-		return "", err
+		return 0, "", err
+	}
+
+	if err := r.db.Get(&existingID, `SELECT id FROM media_items WHERE source_path = ? LIMIT 1`, item.SourcePath); err != nil {
+		return 0, "", err
 	}
 
 	if existed {
-		return "updated", nil
+		return existingID, "updated", nil
 	}
-	return "inserted", nil
+	return existingID, "inserted", nil
 }
 
 func (r *Repository) List(q string, mediaType string, taggedStatus string, limit int, offset int) ([]MediaItem, int, error) {

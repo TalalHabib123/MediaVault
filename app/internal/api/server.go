@@ -105,7 +105,23 @@ func NewRouter(s *Server) http.Handler {
 			summary.Errors = []string{}
 		}
 
-		writeJSON(w, http.StatusOK, summary)
+		previewJob := s.Previewer.StartWarmup(summary.ProcessedMediaIDs)
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"sources":     summary.Sources,
+			"files_seen":  summary.FilesSeen,
+			"inserted":    summary.Inserted,
+			"updated":     summary.Updated,
+			"skipped":     summary.Skipped,
+			"errors":      summary.Errors,
+			"preview_job": previewJob,
+		})
+	})
+
+	r.Get("/api/previews/progress", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"job": s.Previewer.GetWarmupStatus(),
+		})
 	})
 
 	r.Get("/api/library", func(w http.ResponseWriter, r *http.Request) {

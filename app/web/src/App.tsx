@@ -1,6 +1,7 @@
 import {
   useEffect,
   useMemo,
+  useRef,
   useState,
   type Dispatch,
   type ReactNode,
@@ -29,6 +30,8 @@ import type {
   MediaItem,
   MetadataOptions,
   Person,
+  PreviewGenerationJob,
+  PreviewProgressResponse,
   ScanSummary,
   Series,
   Tag,
@@ -126,6 +129,13 @@ function setLibraryTaggedStatus(nextValue: string) {
 
   const [scanLoading, setScanLoading] = useState(false);
   const [scanSummary, setScanSummary] = useState<ScanSummary | null>(null);
+  const [previewJob, setPreviewJob] = useState<PreviewGenerationJob | null>(
+    null,
+  );
+  const [dismissedPreviewJobId, setDismissedPreviewJobId] = useState<
+    string | null
+  >(null);
+  const completedPreviewJobRef = useRef<string | null>(null);
 
   const [selectedDetail, setSelectedDetail] =
     useState<MediaDetailResponse | null>(null);
@@ -156,6 +166,10 @@ function setLibraryTaggedStatus(nextValue: string) {
   }, []);
 
   useEffect(() => {
+    void loadPreviewProgress();
+  }, []);
+
+  useEffect(() => {
     if (!configLoading) {
       void loadLibrary();
     }
@@ -166,6 +180,38 @@ function setLibraryTaggedStatus(nextValue: string) {
       prev.filter((id) => library.some((item) => item.id === id)),
     );
   }, [library]);
+
+  useEffect(() => {
+    if (!previewJob || previewJob.status !== "running") {
+      return;
+    }
+
+    const interval = window.setInterval(() => {
+      void loadPreviewProgress();
+    }, 1000);
+
+    return () => window.clearInterval(interval);
+  }, [previewJob?.id, previewJob?.status]);
+
+  useEffect(() => {
+    if (!previewJob) return;
+
+    if (dismissedPreviewJobId && dismissedPreviewJobId !== previewJob.id) {
+      setDismissedPreviewJobId(null);
+    }
+
+    if (
+      previewJob.status === "completed" &&
+      completedPreviewJobRef.current !== previewJob.id
+    ) {
+      completedPreviewJobRef.current = previewJob.id;
+      setMessage(
+        previewJob.failed_steps > 0
+          ? `Preview generation reached 100% with ${previewJob.failed_steps} issue(s).`
+          : "Preview generation reached 100%.",
+      );
+    }
+  }, [previewJob, dismissedPreviewJobId]);
 
   function openPlayer(id: number) {
   const returnTo = `${location.pathname}${location.search}`;
@@ -413,6 +459,17 @@ const visibleItems = useMemo(() => {
     }
   }
 
+  async function loadPreviewProgress() {
+    try {
+      const data = await apiFetch<PreviewProgressResponse>(
+        "/api/previews/progress",
+      );
+      setPreviewJob(data?.job ?? null);
+    } catch {
+      // Keep preview polling failure non-blocking for the rest of the dashboard.
+    }
+  }
+
   async function runScan() {
     try {
       setScanLoading(true);
@@ -431,9 +488,17 @@ const visibleItems = useMemo(() => {
         updated: typeof data?.updated === "number" ? data.updated : 0,
         skipped: typeof data?.skipped === "number" ? data.skipped : 0,
         errors: Array.isArray(data?.errors) ? data.errors : [],
+        preview_job: data?.preview_job ?? null,
       });
 
-      setMessage("Scan completed.");
+      setPreviewJob(data?.preview_job ?? null);
+      setDismissedPreviewJobId(null);
+
+      setMessage(
+        data?.preview_job
+          ? "Scan completed. Preview generation started in the background."
+          : "Scan completed.",
+      );
       await loadLibrary();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Scan failed");
@@ -809,6 +874,13 @@ const visibleItems = useMemo(() => {
         </main>
       </div>
 
+      {previewJob && dismissedPreviewJobId !== previewJob.id ? (
+        <PreviewJobNotification
+          job={previewJob}
+          onDismiss={() => setDismissedPreviewJobId(previewJob.id)}
+        />
+      ) : null}
+
       <MediaDetailDrawer
         detail={selectedDetail}
         options={options}
@@ -838,6 +910,100 @@ const visibleItems = useMemo(() => {
         onClose={() => setBulkTagOpen(false)}
         onApply={applyBulkTagging}
       />
+    </div>
+  );
+}
+
+function PreviewJobNotification(props: {
+  job: PreviewGenerationJob;
+  onDismiss: () => void;
+}) {
+  const { job, onDismiss } = props;
+  const completed = job.status === "completed";
+  const canceled = job.status === "canceled";
+  const running = job.status === "running";
+
+  const title = running
+    ? "Generating Previews"
+    : canceled
+      ? "Preview Generation Canceled"
+      : "Preview Generation Complete";
+
+  const accentClass = running
+    ? "border-sky-500/30 bg-sky-500/10 text-sky-100"
+    : canceled
+      ? "border-amber-500/30 bg-amber-500/10 text-amber-100"
+      : "border-emerald-500/30 bg-emerald-500/10 text-emerald-100";
+
+  return (
+    <div className="pointer-events-none fixed right-6 top-6 z-40 w-full max-w-md">
+      <div
+        className={`pointer-events-auto rounded-2xl border p-4 shadow-2xl backdrop-blur ${accentClass}`}
+      >
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <div className="text-sm font-semibold">{title}</div>
+            <div className="mt-1 text-xs opacity-80">
+              {job.completed_steps}/{job.total_steps} steps completed across{" "}
+              {job.total_items} item(s)
+            </div>
+          </div>
+
+          {!running ? (
+            <button
+              type="button"
+              onClick={onDismiss}
+              className="rounded-lg border border-current/20 px-2.5 py-1 text-xs hover:bg-black/10"
+            >
+              Dismiss
+            </button>
+          ) : null}
+        </div>
+
+        <div className="mt-4 h-2 overflow-hidden rounded-full bg-black/20">
+          <div
+            className="h-full rounded-full bg-current transition-all"
+            style={{ width: `${Math.max(0, Math.min(job.progress_percent, 100))}%` }}
+          />
+        </div>
+
+        <div className="mt-3 flex flex-wrap gap-3 text-xs opacity-90">
+          <span>{job.progress_percent}%</span>
+          <span>Success: {job.succeeded_steps}</span>
+          <span>Issues: {job.failed_steps}</span>
+        </div>
+
+        {job.current_title ? (
+          <div className="mt-3 rounded-xl bg-black/10 px-3 py-2 text-xs">
+            <div className="uppercase tracking-wide opacity-70">Current</div>
+            <div className="mt-1 truncate font-medium">{job.current_title}</div>
+            {job.current_stage ? (
+              <div className="mt-1 opacity-80">
+                {job.current_stage === "thumbnail"
+                  ? "Generating thumbnail strip"
+                  : "Generating hover preview"}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
+        {completed && job.failed_steps === 0 ? (
+          <div className="mt-3 text-xs opacity-90">
+            All thumbnails and hover previews finished successfully.
+          </div>
+        ) : null}
+
+        {job.errors.length > 0 ? (
+          <div className="mt-3 rounded-xl bg-black/10 px-3 py-2 text-xs">
+            <div className="font-medium">Recent issues</div>
+            <div className="mt-1 max-h-24 overflow-auto space-y-1 opacity-90">
+              {job.errors.slice(0, 3).map((entry, index) => (
+                <div key={`${entry}-${index}`}>{entry}</div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 }

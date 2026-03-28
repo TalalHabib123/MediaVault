@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"mediavault/internal/config"
@@ -15,10 +16,35 @@ import (
 
 type Service struct {
 	ConfigService *config.Service
+	LibraryRepo   *library.Repository
+
+	mu            sync.RWMutex
+	currentJob    *WarmupJobStatus
+	currentCancel context.CancelFunc
 }
 
-func NewService(cfg *config.Service) *Service {
-	return &Service{ConfigService: cfg}
+type WarmupJobStatus struct {
+	ID              string   `json:"id"`
+	Status          string   `json:"status"`
+	TotalItems      int      `json:"total_items"`
+	TotalSteps      int      `json:"total_steps"`
+	CompletedSteps  int      `json:"completed_steps"`
+	SucceededSteps  int      `json:"succeeded_steps"`
+	FailedSteps     int      `json:"failed_steps"`
+	ProgressPercent int      `json:"progress_percent"`
+	CurrentItemID   int64    `json:"current_item_id"`
+	CurrentTitle    string   `json:"current_title"`
+	CurrentStage    string   `json:"current_stage"`
+	Errors          []string `json:"errors"`
+	StartedAt       string   `json:"started_at"`
+	FinishedAt      string   `json:"finished_at"`
+}
+
+func NewService(cfg *config.Service, repo *library.Repository) *Service {
+	return &Service{
+		ConfigService: cfg,
+		LibraryRepo:   repo,
+	}
 }
 
 func (s *Service) ResolveMediaPath(item *library.MediaItem) string {
@@ -26,6 +52,228 @@ func (s *Service) ResolveMediaPath(item *library.MediaItem) string {
 		return item.CanonicalPath
 	}
 	return item.SourcePath
+}
+
+func (s *Service) StartWarmup(mediaIDs []int64) *WarmupJobStatus {
+	ids := dedupePreviewIDs(mediaIDs)
+	if len(ids) == 0 {
+		return nil
+	}
+
+	s.mu.Lock()
+	if s.currentCancel != nil {
+		s.currentCancel()
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	job := &WarmupJobStatus{
+		ID:         fmt.Sprintf("preview-%d", time.Now().UTC().UnixNano()),
+		Status:     "running",
+		TotalItems: len(ids),
+		TotalSteps: len(ids) * 2,
+		Errors:     []string{},
+		StartedAt:  time.Now().UTC().Format(time.RFC3339),
+	}
+	s.currentJob = job
+	s.currentCancel = cancel
+	s.mu.Unlock()
+
+	go s.runWarmup(ctx, job.ID, ids)
+
+	return cloneJobStatus(job)
+}
+
+func (s *Service) GetWarmupStatus() *WarmupJobStatus {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return cloneJobStatus(s.currentJob)
+}
+
+func (s *Service) runWarmup(ctx context.Context, jobID string, ids []int64) {
+	workerCount := previewWorkerCount(len(ids))
+	mediaCh := make(chan int64)
+	var wg sync.WaitGroup
+
+	for i := 0; i < workerCount; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			for mediaID := range mediaCh {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+
+				item, err := s.LibraryRepo.GetByID(mediaID)
+				if err != nil {
+					s.recordWarmupFailure(jobID, mediaID, "", "thumbnail", err)
+					s.recordWarmupFailure(jobID, mediaID, "", "hover", err)
+					continue
+				}
+
+				s.updateCurrentItem(jobID, item.ID, item.Title, "thumbnail")
+				if _, err := s.EnsureThumbnail(item); err != nil {
+					s.recordWarmupFailure(jobID, item.ID, item.Title, "thumbnail", err)
+				} else {
+					s.recordWarmupSuccess(jobID, item.ID, item.Title, "thumbnail")
+				}
+
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+
+				s.updateCurrentItem(jobID, item.ID, item.Title, "hover")
+				if _, err := s.EnsureHoverClip(item); err != nil {
+					s.recordWarmupFailure(jobID, item.ID, item.Title, "hover", err)
+				} else {
+					s.recordWarmupSuccess(jobID, item.ID, item.Title, "hover")
+				}
+			}
+		}()
+	}
+
+	for _, mediaID := range ids {
+		select {
+		case <-ctx.Done():
+			close(mediaCh)
+			wg.Wait()
+			s.finishWarmup(jobID, "canceled")
+			return
+		case mediaCh <- mediaID:
+		}
+	}
+
+	close(mediaCh)
+	wg.Wait()
+
+	if ctx.Err() != nil {
+		s.finishWarmup(jobID, "canceled")
+		return
+	}
+
+	s.finishWarmup(jobID, "completed")
+}
+
+func (s *Service) updateCurrentItem(jobID string, mediaID int64, title string, stage string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.currentJob == nil || s.currentJob.ID != jobID {
+		return
+	}
+
+	s.currentJob.CurrentItemID = mediaID
+	s.currentJob.CurrentTitle = title
+	s.currentJob.CurrentStage = stage
+}
+
+func (s *Service) recordWarmupSuccess(jobID string, mediaID int64, title string, stage string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.currentJob == nil || s.currentJob.ID != jobID {
+		return
+	}
+
+	s.currentJob.CurrentItemID = mediaID
+	s.currentJob.CurrentTitle = title
+	s.currentJob.CurrentStage = stage
+	s.currentJob.CompletedSteps++
+	s.currentJob.SucceededSteps++
+	s.currentJob.ProgressPercent = computeProgressPercent(s.currentJob.CompletedSteps, s.currentJob.TotalSteps)
+}
+
+func (s *Service) recordWarmupFailure(jobID string, mediaID int64, title string, stage string, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.currentJob == nil || s.currentJob.ID != jobID {
+		return
+	}
+
+	s.currentJob.CurrentItemID = mediaID
+	s.currentJob.CurrentTitle = title
+	s.currentJob.CurrentStage = stage
+	s.currentJob.CompletedSteps++
+	s.currentJob.FailedSteps++
+	s.currentJob.ProgressPercent = computeProgressPercent(s.currentJob.CompletedSteps, s.currentJob.TotalSteps)
+
+	if len(s.currentJob.Errors) < 10 {
+		label := title
+		if strings.TrimSpace(label) == "" {
+			label = fmt.Sprintf("#%d", mediaID)
+		}
+		s.currentJob.Errors = append(s.currentJob.Errors, fmt.Sprintf("%s (%s): %v", label, stage, err))
+	}
+}
+
+func (s *Service) finishWarmup(jobID string, status string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.currentJob == nil || s.currentJob.ID != jobID {
+		return
+	}
+
+	s.currentJob.Status = status
+	s.currentJob.ProgressPercent = computeProgressPercent(s.currentJob.CompletedSteps, s.currentJob.TotalSteps)
+	s.currentJob.CurrentStage = ""
+	s.currentJob.FinishedAt = time.Now().UTC().Format(time.RFC3339)
+	if status == "completed" && s.currentJob.TotalSteps > 0 {
+		s.currentJob.ProgressPercent = 100
+	}
+	s.currentCancel = nil
+}
+
+func cloneJobStatus(job *WarmupJobStatus) *WarmupJobStatus {
+	if job == nil {
+		return nil
+	}
+
+	clone := *job
+	clone.Errors = append([]string{}, job.Errors...)
+	return &clone
+}
+
+func computeProgressPercent(completed int, total int) int {
+	if total <= 0 {
+		return 0
+	}
+	if completed >= total {
+		return 100
+	}
+	return int(float64(completed) / float64(total) * 100)
+}
+
+func previewWorkerCount(totalItems int) int {
+	switch {
+	case totalItems >= 12:
+		return 3
+	case totalItems >= 2:
+		return 2
+	default:
+		return 1
+	}
+}
+
+func dedupePreviewIDs(values []int64) []int64 {
+	seen := map[int64]bool{}
+	out := make([]int64, 0, len(values))
+
+	for _, value := range values {
+		if value <= 0 || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+
+	return out
 }
 
 func (s *Service) EnsureThumbnail(item *library.MediaItem) (string, error) {
@@ -246,4 +494,11 @@ func samplePoints(duration float64, count int, segmentDuration float64) []float6
 
 func formatSeconds(value float64) string {
 	return fmt.Sprintf("%.2f", value)
+}
+
+func max(a int, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }

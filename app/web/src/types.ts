@@ -64,6 +64,28 @@ export type ScanSummary = {
   updated: number;
   skipped: number;
   errors: string[];
+  preview_job?: PreviewGenerationJob | null;
+};
+
+export type PreviewGenerationJob = {
+  id: string;
+  status: "running" | "completed" | "canceled" | string;
+  total_items: number;
+  total_steps: number;
+  completed_steps: number;
+  succeeded_steps: number;
+  failed_steps: number;
+  progress_percent: number;
+  current_item_id: number;
+  current_title: string;
+  current_stage: "thumbnail" | "hover" | "" | string;
+  errors: string[];
+  started_at: string;
+  finished_at: string;
+};
+
+export type PreviewProgressResponse = {
+  job: PreviewGenerationJob | null;
 };
 
 export type Company = {

@@ -36,7 +36,7 @@ func newTestHarness(t *testing.T) *testHarness {
 
 	libraryRepo := library.NewRepository(sqliteDB)
 	metadataRepo := metadata.NewRepository(sqliteDB)
-	previewService := previews.NewService(cfgService)
+	previewService := previews.NewService(cfgService, libraryRepo)
 
 	return &testHarness{
 		cfgService:   cfgService,
@@ -69,7 +69,7 @@ func (h *testHarness) createMedia(t *testing.T, sourcePath string, canonicalPath
 		SequenceSource: "auto",
 	}
 
-	if _, err := h.libraryRepo.Upsert(item); err != nil {
+	if _, _, err := h.libraryRepo.Upsert(item); err != nil {
 		t.Fatalf("upsert media: %v", err)
 	}
 

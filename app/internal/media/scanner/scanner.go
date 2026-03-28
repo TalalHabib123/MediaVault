@@ -20,12 +20,13 @@ type Service struct {
 }
 
 type Summary struct {
-	Sources   int      `json:"sources"`
-	FilesSeen int      `json:"files_seen"`
-	Inserted  int      `json:"inserted"`
-	Updated   int      `json:"updated"`
-	Skipped   int      `json:"skipped"`
-	Errors    []string `json:"errors"`
+	Sources           int      `json:"sources"`
+	FilesSeen         int      `json:"files_seen"`
+	Inserted          int      `json:"inserted"`
+	Updated           int      `json:"updated"`
+	Skipped           int      `json:"skipped"`
+	Errors            []string `json:"errors"`
+	ProcessedMediaIDs []int64  `json:"-"`
 }
 
 func NewService(cfg *config.Service, repo *library.Repository) *Service {
@@ -133,11 +134,13 @@ func (s *Service) ScanAll(ctx context.Context) (*Summary, error) {
 				SequenceSource:  "auto",
 			}
 
-			status, err := s.LibraryRepo.Upsert(item)
+			mediaID, status, err := s.LibraryRepo.Upsert(item)
 			if err != nil {
 				summary.Errors = append(summary.Errors, fmt.Sprintf("db upsert failed: %s: %v", path, err))
 				return nil
 			}
+
+			summary.ProcessedMediaIDs = append(summary.ProcessedMediaIDs, mediaID)
 
 			if status == "inserted" {
 				summary.Inserted++
