@@ -1,3 +1,6 @@
+export { default } from "./root-app";
+
+/* Legacy dashboard implementation retained during redesign extraction.
 import {
   useEffect,
   useMemo,
@@ -1812,13 +1815,4 @@ function sortSeries(items: Series[]) {
   return [...items].sort((a, b) => a.name.localeCompare(b.name));
 }
 
-export default function App() {
-  return (
-    <BrowserRouter>
-      <Routes>
-        <Route path="/" element={<DashboardPage />} />
-        <Route path="/player/:id" element={<PlayerPage />} />
-      </Routes>
-    </BrowserRouter>
-  );
-}
+*/

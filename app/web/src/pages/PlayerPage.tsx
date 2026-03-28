@@ -1,3 +1,6 @@
+export { PlayerPage as default } from "../features/player/player-page";
+
+/* Legacy page retained during redesign extraction.
 import { useEffect, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { apiFetch } from "../lib/api";
@@ -131,3 +134,4 @@ export default function PlayerPage() {
     </div>
   );
 }
+*/

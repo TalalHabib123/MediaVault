@@ -1,3 +1,6 @@
+export { MetadataPage as default } from "../features/metadata/metadata-page";
+
+/* Legacy component retained during redesign extraction.
 import { useMemo, useState } from "react";
 import type { Category, Company, MetadataOptions, Person, Series, Tag } from "../types";
 
@@ -323,3 +326,4 @@ function SimpleList({ items, emptyText }: { items: string[]; emptyText: string }
     </div>
   );
 }
+*/
