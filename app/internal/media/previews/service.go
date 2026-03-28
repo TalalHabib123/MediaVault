@@ -25,6 +25,10 @@ type Service struct {
 
 type WarmupJobStatus struct {
 	ID              string   `json:"id"`
+	JobType         string   `json:"job_type"`
+	GenerateThumbs  bool     `json:"generate_thumbs"`
+	GenerateHovers  bool     `json:"generate_hovers"`
+	ForceRegenerate bool     `json:"force_regenerate"`
 	Status          string   `json:"status"`
 	TotalItems      int      `json:"total_items"`
 	TotalSteps      int      `json:"total_steps"`
@@ -38,6 +42,14 @@ type WarmupJobStatus struct {
 	Errors          []string `json:"errors"`
 	StartedAt       string   `json:"started_at"`
 	FinishedAt      string   `json:"finished_at"`
+}
+
+type JobRequest struct {
+	MediaIDs        []int64
+	GenerateThumbs  bool
+	GenerateHovers  bool
+	ForceRegenerate bool
+	JobType         string
 }
 
 func NewService(cfg *config.Service, repo *library.Repository) *Service {
@@ -55,9 +67,29 @@ func (s *Service) ResolveMediaPath(item *library.MediaItem) string {
 }
 
 func (s *Service) StartWarmup(mediaIDs []int64) *WarmupJobStatus {
-	ids := dedupePreviewIDs(mediaIDs)
+	return s.StartJob(JobRequest{
+		MediaIDs:       mediaIDs,
+		GenerateThumbs: true,
+		GenerateHovers: true,
+		JobType:        "scan_warmup",
+	})
+}
+
+func (s *Service) StartJob(request JobRequest) *WarmupJobStatus {
+	ids := dedupePreviewIDs(request.MediaIDs)
 	if len(ids) == 0 {
 		return nil
+	}
+	if !request.GenerateThumbs && !request.GenerateHovers {
+		return nil
+	}
+
+	totalSteps := 0
+	if request.GenerateThumbs {
+		totalSteps += len(ids)
+	}
+	if request.GenerateHovers {
+		totalSteps += len(ids)
 	}
 
 	s.mu.Lock()
@@ -67,18 +99,22 @@ func (s *Service) StartWarmup(mediaIDs []int64) *WarmupJobStatus {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	job := &WarmupJobStatus{
-		ID:         fmt.Sprintf("preview-%d", time.Now().UTC().UnixNano()),
-		Status:     "running",
-		TotalItems: len(ids),
-		TotalSteps: len(ids) * 2,
-		Errors:     []string{},
-		StartedAt:  time.Now().UTC().Format(time.RFC3339),
+		ID:              fmt.Sprintf("preview-%d", time.Now().UTC().UnixNano()),
+		JobType:         resolvePreviewJobType(request.JobType),
+		GenerateThumbs:  request.GenerateThumbs,
+		GenerateHovers:  request.GenerateHovers,
+		ForceRegenerate: request.ForceRegenerate,
+		Status:          "running",
+		TotalItems:      len(ids),
+		TotalSteps:      totalSteps,
+		Errors:          []string{},
+		StartedAt:       time.Now().UTC().Format(time.RFC3339),
 	}
 	s.currentJob = job
 	s.currentCancel = cancel
 	s.mu.Unlock()
 
-	go s.runWarmup(ctx, job.ID, ids)
+	go s.runWarmup(ctx, job.ID, ids, request)
 
 	return cloneJobStatus(job)
 }
@@ -90,7 +126,7 @@ func (s *Service) GetWarmupStatus() *WarmupJobStatus {
 	return cloneJobStatus(s.currentJob)
 }
 
-func (s *Service) runWarmup(ctx context.Context, jobID string, ids []int64) {
+func (s *Service) runWarmup(ctx context.Context, jobID string, ids []int64, request JobRequest) {
 	workerCount := previewWorkerCount(len(ids))
 	mediaCh := make(chan int64)
 	var wg sync.WaitGroup
@@ -109,29 +145,39 @@ func (s *Service) runWarmup(ctx context.Context, jobID string, ids []int64) {
 
 				item, err := s.LibraryRepo.GetByID(mediaID)
 				if err != nil {
-					s.recordWarmupFailure(jobID, mediaID, "", "thumbnail", err)
-					s.recordWarmupFailure(jobID, mediaID, "", "hover", err)
+					if request.GenerateThumbs {
+						s.recordWarmupFailure(jobID, mediaID, "", "thumbnail", err)
+					}
+					if request.GenerateHovers {
+						s.recordWarmupFailure(jobID, mediaID, "", "hover", err)
+					}
 					continue
 				}
 
-				s.updateCurrentItem(jobID, item.ID, item.Title, "thumbnail")
-				if _, err := s.EnsureThumbnail(item); err != nil {
-					s.recordWarmupFailure(jobID, item.ID, item.Title, "thumbnail", err)
-				} else {
-					s.recordWarmupSuccess(jobID, item.ID, item.Title, "thumbnail")
+				if request.GenerateThumbs {
+					s.updateCurrentItem(jobID, item.ID, item.Title, "thumbnail")
+					if _, err := s.EnsureThumbnailWithOptions(item, request.ForceRegenerate); err != nil {
+						s.recordWarmupFailure(jobID, item.ID, item.Title, "thumbnail", err)
+					} else {
+						s.recordWarmupSuccess(jobID, item.ID, item.Title, "thumbnail")
+					}
 				}
 
-				select {
-				case <-ctx.Done():
-					return
-				default:
+				if request.GenerateThumbs && request.GenerateHovers {
+					select {
+					case <-ctx.Done():
+						return
+					default:
+					}
 				}
 
-				s.updateCurrentItem(jobID, item.ID, item.Title, "hover")
-				if _, err := s.EnsureHoverClip(item); err != nil {
-					s.recordWarmupFailure(jobID, item.ID, item.Title, "hover", err)
-				} else {
-					s.recordWarmupSuccess(jobID, item.ID, item.Title, "hover")
+				if request.GenerateHovers {
+					s.updateCurrentItem(jobID, item.ID, item.Title, "hover")
+					if _, err := s.EnsureHoverClipWithOptions(item, request.ForceRegenerate); err != nil {
+						s.recordWarmupFailure(jobID, item.ID, item.Title, "hover", err)
+					} else {
+						s.recordWarmupSuccess(jobID, item.ID, item.Title, "hover")
+					}
 				}
 			}
 		}()
@@ -277,6 +323,10 @@ func dedupePreviewIDs(values []int64) []int64 {
 }
 
 func (s *Service) EnsureThumbnail(item *library.MediaItem) (string, error) {
+	return s.EnsureThumbnailWithOptions(item, false)
+}
+
+func (s *Service) EnsureThumbnailWithOptions(item *library.MediaItem, force bool) (string, error) {
 	cfg, err := s.ConfigService.Load()
 	if err != nil {
 		return "", err
@@ -303,54 +353,39 @@ func (s *Service) EnsureThumbnail(item *library.MediaItem) (string, error) {
 	}
 
 	outPath := filepath.Join(outDir, fmt.Sprintf("%d.jpg", item.ID))
-	if fresh, err := isFresh(sourcePath, outPath); err == nil && fresh {
-		return outPath, nil
+	if !force {
+		if fresh, err := isFresh(sourcePath, outPath); err == nil && fresh {
+			return outPath, nil
+		}
 	}
 
-	points := samplePoints(item.DurationSeconds, 5, 1.2)
+	seekPoint := thumbnailPoint(item.DurationSeconds)
 
-	args := []string{"-y"}
-	for _, point := range points {
-		args = append(args,
-			"-ss", formatSeconds(point),
-			"-i", sourcePath,
-		)
-	}
-
-	filterParts := make([]string, 0, 6)
-	labels := make([]string, 0, len(points))
-
-	for i := range points {
-		filterParts = append(filterParts,
-			fmt.Sprintf(
-				"[%d:v]scale=320:180:force_original_aspect_ratio=decrease,pad=320:180:(ow-iw)/2:(oh-ih)/2:black,setsar=1[v%d]",
-				i, i,
-			),
-		)
-		labels = append(labels, fmt.Sprintf("[v%d]", i))
-	}
-
-	filterParts = append(filterParts, fmt.Sprintf("%shstack=inputs=%d[v]", strings.Join(labels, ""), len(points)))
-
-	args = append(args,
-		"-filter_complex", strings.Join(filterParts, ";"),
-		"-map", "[v]",
+	args := []string{
+		"-y",
+		"-ss", formatSeconds(seekPoint),
+		"-i", sourcePath,
 		"-frames:v", "1",
+		"-vf", "scale=640:360:force_original_aspect_ratio=decrease,pad=640:360:(ow-iw)/2:(oh-ih)/2:black,setsar=1",
 		outPath,
-	)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, ffmpegPath, args...)
 	if output, err := cmd.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("thumbnail strip generation failed: %v: %s", err, strings.TrimSpace(string(output)))
+		return "", fmt.Errorf("thumbnail generation failed: %v: %s", err, strings.TrimSpace(string(output)))
 	}
 
 	return outPath, nil
 }
 
 func (s *Service) EnsureHoverClip(item *library.MediaItem) (string, error) {
+	return s.EnsureHoverClipWithOptions(item, false)
+}
+
+func (s *Service) EnsureHoverClipWithOptions(item *library.MediaItem, force bool) (string, error) {
 	cfg, err := s.ConfigService.Load()
 	if err != nil {
 		return "", err
@@ -377,8 +412,10 @@ func (s *Service) EnsureHoverClip(item *library.MediaItem) (string, error) {
 	}
 
 	outPath := filepath.Join(outDir, fmt.Sprintf("%d.mp4", item.ID))
-	if fresh, err := isFresh(sourcePath, outPath); err == nil && fresh {
-		return outPath, nil
+	if !force {
+		if fresh, err := isFresh(sourcePath, outPath); err == nil && fresh {
+			return outPath, nil
+		}
 	}
 
 	segmentDuration := 1.3
@@ -494,6 +531,36 @@ func samplePoints(duration float64, count int, segmentDuration float64) []float6
 
 func formatSeconds(value float64) string {
 	return fmt.Sprintf("%.2f", value)
+}
+
+func thumbnailPoint(duration float64) float64 {
+	if duration <= 0 {
+		return 0
+	}
+
+	point := duration * 0.08
+	if point < 1 {
+		point = 1
+	}
+	safeEnd := duration - 0.5
+	if safeEnd < 0 {
+		safeEnd = 0
+	}
+	if point > safeEnd {
+		point = safeEnd
+	}
+	return point
+}
+
+func resolvePreviewJobType(value string) string {
+	switch strings.TrimSpace(value) {
+	case "regen_thumbnails":
+		return "regen_thumbnails"
+	case "regen_hovers":
+		return "regen_hovers"
+	default:
+		return "scan_warmup"
+	}
 }
 
 func max(a int, b int) int {

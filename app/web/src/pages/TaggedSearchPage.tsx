@@ -6,6 +6,7 @@ import type { MetadataOptions, SearchTaggedResponse } from "../types";
 
 type Props = {
   options: MetadataOptions;
+  previewAssetVersion: number;
   onOpenPlayer: (id: number) => void;
   onOpenVLC: (id: number) => Promise<void>;
   onEditTag: (id: number) => Promise<void>;
@@ -13,6 +14,7 @@ type Props = {
 
 export default function TaggedSearchPage({
   options,
+  previewAssetVersion,
   onOpenPlayer,
   onOpenVLC,
   onEditTag,
@@ -286,6 +288,7 @@ export default function TaggedSearchPage({
                 <SearchResultCard
                   key={item.id}
                   item={item}
+                  previewAssetVersion={previewAssetVersion}
                   onOpenPlayer={() => onOpenPlayer(item.id)}
                   onOpenVLC={() => void onOpenVLC(item.id)}
                   onEditTag={() => void onEditTag(item.id)}

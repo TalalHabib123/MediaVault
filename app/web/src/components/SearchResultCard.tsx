@@ -3,6 +3,7 @@ import type { MediaItem } from "../types";
 
 type Props = {
   item: MediaItem;
+  previewAssetVersion: number;
   onOpenPlayer: () => void;
   onOpenVLC: () => void;
   onEditTag: () => void;
@@ -10,6 +11,7 @@ type Props = {
 
 export default function SearchResultCard({
   item,
+  previewAssetVersion,
   onOpenPlayer,
   onOpenVLC,
   onEditTag,
@@ -17,6 +19,8 @@ export default function SearchResultCard({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [hovered, setHovered] = useState(false);
   const [videoMounted, setVideoMounted] = useState(false);
+  const thumbnailSrc = `/api/library/${item.id}/thumbnail?v=${previewAssetVersion}`;
+  const hoverPreviewSrc = `/api/library/${item.id}/hover-preview?v=${previewAssetVersion}`;
 
   useEffect(() => {
     const video = videoRef.current;
@@ -45,7 +49,7 @@ export default function SearchResultCard({
     >
       <div className="relative aspect-video w-full overflow-hidden bg-black">
         <img
-          src={`/api/library/${item.id}/thumbnail`}
+          src={thumbnailSrc}
           alt={item.title}
           className={`absolute inset-0 h-full w-full object-contain transition-opacity duration-200 ${
             hovered ? "opacity-0" : "opacity-100"
@@ -56,7 +60,7 @@ export default function SearchResultCard({
         {videoMounted ? (
           <video
             ref={videoRef}
-            src={`/api/library/${item.id}/hover-preview`}
+            src={hoverPreviewSrc}
             muted
             loop
             playsInline

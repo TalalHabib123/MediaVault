@@ -69,6 +69,10 @@ export type ScanSummary = {
 
 export type PreviewGenerationJob = {
   id: string;
+  job_type: "scan_warmup" | "regen_thumbnails" | "regen_hovers" | string;
+  generate_thumbs: boolean;
+  generate_hovers: boolean;
+  force_regenerate: boolean;
   status: "running" | "completed" | "canceled" | string;
   total_items: number;
   total_steps: number;
@@ -85,6 +89,13 @@ export type PreviewGenerationJob = {
 };
 
 export type PreviewProgressResponse = {
+  job: PreviewGenerationJob | null;
+};
+
+export type PreviewRegenerateTarget = "thumbnails" | "hovers";
+
+export type PreviewJobResponse = {
+  ok: boolean;
   job: PreviewGenerationJob | null;
 };
 
@@ -187,6 +198,58 @@ export type BulkTaggingPayload = {
 export type BulkMoveFailure = {
   media_id: number;
   error: string;
+};
+
+export type MoveJobItem = {
+  media_id: number;
+  title: string;
+  status:
+    | "pending"
+    | "running"
+    | "moved"
+    | "already_managed"
+    | "failed"
+    | string;
+  stage:
+    | "queued"
+    | "validating"
+    | "preparing"
+    | "transferring"
+    | "finalizing"
+    | "completed"
+    | "failed"
+    | string;
+  progress_percent: number;
+  already_managed: boolean;
+  old_path: string;
+  new_path: string;
+  error: string;
+};
+
+export type MoveJob = {
+  id: string;
+  status: "running" | "completed" | string;
+  total_items: number;
+  completed_items: number;
+  succeeded_items: number;
+  already_managed_items: number;
+  failed_items: number;
+  progress_percent: number;
+  current_item_id: number;
+  current_title: string;
+  current_stage: string;
+  items: MoveJobItem[];
+  started_at: string;
+  finished_at: string;
+};
+
+export type MoveJobResponse = {
+  ok: boolean;
+  job: MoveJob | null;
+};
+
+export type MoveProgressResponse = {
+  job: MoveJob | null;
 };
 
 export type BulkMoveResponse = {

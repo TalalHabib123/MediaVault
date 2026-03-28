@@ -16,7 +16,7 @@ import LibraryCard from "./components/LibraryCard";
 import PlayerPage from "./pages/PlayerPage";
 
 import BulkTagDrawer from "./components/BulkTagDrawer";
-import type { BulkMoveResponse, BulkTaggingPayload } from "./types";
+import type { BulkTaggingPayload } from "./types";
 import TaggedSearchPage from "./pages/TaggedSearchPage";
 
 import type {
@@ -29,9 +29,14 @@ import type {
   MediaDetailResponse,
   MediaItem,
   MetadataOptions,
+  MoveJob,
+  MoveJobResponse,
+  MoveProgressResponse,
   Person,
   PreviewGenerationJob,
+  PreviewJobResponse,
   PreviewProgressResponse,
+  PreviewRegenerateTarget,
   ScanSummary,
   Series,
   Tag,
@@ -132,10 +137,18 @@ function setLibraryTaggedStatus(nextValue: string) {
   const [previewJob, setPreviewJob] = useState<PreviewGenerationJob | null>(
     null,
   );
+  const [previewAssetVersion, setPreviewAssetVersion] = useState(() =>
+    Date.now(),
+  );
+  const [moveJob, setMoveJob] = useState<MoveJob | null>(null);
   const [dismissedPreviewJobId, setDismissedPreviewJobId] = useState<
     string | null
   >(null);
+  const [dismissedMoveJobId, setDismissedMoveJobId] = useState<string | null>(
+    null,
+  );
   const completedPreviewJobRef = useRef<string | null>(null);
+  const completedMoveJobRef = useRef<string | null>(null);
 
   const [selectedDetail, setSelectedDetail] =
     useState<MediaDetailResponse | null>(null);
@@ -167,6 +180,7 @@ function setLibraryTaggedStatus(nextValue: string) {
 
   useEffect(() => {
     void loadPreviewProgress();
+    void loadMoveProgress();
   }, []);
 
   useEffect(() => {
@@ -194,6 +208,18 @@ function setLibraryTaggedStatus(nextValue: string) {
   }, [previewJob?.id, previewJob?.status]);
 
   useEffect(() => {
+    if (!moveJob || moveJob.status !== "running") {
+      return;
+    }
+
+    const interval = window.setInterval(() => {
+      void loadMoveProgress();
+    }, 800);
+
+    return () => window.clearInterval(interval);
+  }, [moveJob?.id, moveJob?.status]);
+
+  useEffect(() => {
     if (!previewJob) return;
 
     if (dismissedPreviewJobId && dismissedPreviewJobId !== previewJob.id) {
@@ -201,17 +227,51 @@ function setLibraryTaggedStatus(nextValue: string) {
     }
 
     if (
-      previewJob.status === "completed" &&
+      (previewJob.status === "completed" || previewJob.status === "canceled") &&
       completedPreviewJobRef.current !== previewJob.id
     ) {
       completedPreviewJobRef.current = previewJob.id;
+      setPreviewAssetVersion(Date.now());
+
+      if (previewJob.status !== "completed") {
+        return;
+      }
+
       setMessage(
         previewJob.failed_steps > 0
-          ? `Preview generation reached 100% with ${previewJob.failed_steps} issue(s).`
-          : "Preview generation reached 100%.",
+          ? `${formatPreviewJobTitle(previewJob)} reached 100% with ${previewJob.failed_steps} issue(s).`
+          : `${formatPreviewJobTitle(previewJob)} reached 100%.`,
       );
     }
   }, [previewJob, dismissedPreviewJobId]);
+
+  useEffect(() => {
+    if (!moveJob) return;
+
+    if (dismissedMoveJobId && dismissedMoveJobId !== moveJob.id) {
+      setDismissedMoveJobId(null);
+    }
+
+    if (
+      moveJob.status === "completed" &&
+      completedMoveJobRef.current !== moveJob.id
+    ) {
+      completedMoveJobRef.current = moveJob.id;
+
+      setMessage(
+        `Move job finished. Moved: ${moveJob.succeeded_items}, already moved: ${moveJob.already_managed_items}, failed: ${moveJob.failed_items}.`,
+      );
+
+      void loadLibrary();
+
+      if (
+        selectedDetail &&
+        moveJob.items.some((item) => item.media_id === selectedDetail.item.id)
+      ) {
+        void openItem(selectedDetail.item.id);
+      }
+    }
+  }, [moveJob, dismissedMoveJobId, selectedDetail]);
 
   function openPlayer(id: number) {
   const returnTo = `${location.pathname}${location.search}`;
@@ -275,15 +335,15 @@ function setLibraryTaggedStatus(nextValue: string) {
   }
 
   async function bulkMoveSelected() {
-    if (selectedIds.length === 0) return;
+    if (selectedIds.length === 0 || moveJob?.status === "running") return;
 
     try {
       setBulkMoving(true);
       setError("");
       setMessage("");
 
-      const data = await apiFetch<BulkMoveResponse>(
-        "/api/library/bulk/move-to-library",
+      const data = await apiFetch<MoveJobResponse>(
+        "/api/library/bulk/move-to-library/start",
         {
           method: "POST",
           body: JSON.stringify({
@@ -292,20 +352,9 @@ function setLibraryTaggedStatus(nextValue: string) {
         },
       );
 
-      setMessage(
-        `Bulk move finished. Moved: ${data.moved}, already managed: ${data.already_managed}, failed: ${data.failed.length}.`,
-      );
-
-      if (data.failed.length > 0) {
-        setError(
-          data.failed
-            .slice(0, 3)
-            .map((item) => `#${item.media_id}: ${item.error}`)
-            .join(" | "),
-        );
-      }
-
-      await loadLibrary();
+      setMoveJob(data?.job ?? null);
+      setDismissedMoveJobId(null);
+      setMessage("Bulk move job started.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Bulk move failed");
     } finally {
@@ -467,6 +516,53 @@ const visibleItems = useMemo(() => {
       setPreviewJob(data?.job ?? null);
     } catch {
       // Keep preview polling failure non-blocking for the rest of the dashboard.
+    }
+  }
+
+  async function startPreviewRegeneration(target: PreviewRegenerateTarget) {
+    const mediaIDs =
+      selectedIds.length > 0 ? selectedIds : visibleItems.map((item) => item.id);
+
+    if (mediaIDs.length === 0 || previewJob?.status === "running") {
+      return;
+    }
+
+    try {
+      setError("");
+      setMessage("");
+
+      const data = await apiFetch<PreviewJobResponse>("/api/previews/regenerate", {
+        method: "POST",
+        body: JSON.stringify({
+          media_ids: mediaIDs,
+          target,
+        }),
+      });
+
+      setPreviewJob(data?.job ?? null);
+      setDismissedPreviewJobId(null);
+      setMessage(
+        target === "thumbnails"
+          ? "Thumbnail regeneration started."
+          : "Hover preview regeneration started.",
+      );
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : target === "thumbnails"
+            ? "Failed to regenerate thumbnails"
+            : "Failed to regenerate hovers",
+      );
+    }
+  }
+
+  async function loadMoveProgress() {
+    try {
+      const data = await apiFetch<MoveProgressResponse>("/api/moves/progress");
+      setMoveJob(data?.job ?? null);
+    } catch {
+      // Keep move polling failure non-blocking for the rest of the dashboard.
     }
   }
 
@@ -663,26 +759,23 @@ const visibleItems = useMemo(() => {
   }
 
   async function moveSelectedToLibrary() {
-    if (!selectedDetail) return;
+    if (!selectedDetail || moveJob?.status === "running") return;
 
     try {
       setMoving(true);
       setError("");
       setMessage("");
 
-      const data = await apiFetch<
-        MediaDetailResponse & { ok: boolean; result: { new_path: string } }
-      >(`/api/library/${selectedDetail.item.id}/move-to-library`, {
+      const data = await apiFetch<MoveJobResponse>(
+        `/api/library/${selectedDetail.item.id}/move-to-library/start`,
+        {
         method: "POST",
-      });
+        },
+      );
 
-      setSelectedDetail({
-        item: data.item,
-        assignments: data.assignments,
-      });
-
-      setMessage(`Moved to library: ${data.result.new_path}`);
-      await loadLibrary();
+      setMoveJob(data?.job ?? null);
+      setDismissedMoveJobId(null);
+      setMessage("Move job started.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to move media");
     } finally {
@@ -821,6 +914,7 @@ const visibleItems = useMemo(() => {
             <LibraryView
               items={visibleItems}
               total={libraryTotal}
+              previewAssetVersion={previewAssetVersion}
               mediaType={mediaTypeFilter}
               taggedStatus={taggedStatusFilter}
               onMediaTypeChange={setLibraryMediaType}
@@ -841,11 +935,16 @@ const visibleItems = useMemo(() => {
               onClearSelection={clearSelection}
               onOpenBulkTagging={() => setBulkTagOpen(true)}
               onBulkMove={bulkMoveSelected}
-              bulkMoving={bulkMoving}
+              bulkMoving={bulkMoving || moveJob?.status === "running"}
+              onRegenThumbnails={() => void startPreviewRegeneration("thumbnails")}
+              onRegenHovers={() => void startPreviewRegeneration("hovers")}
+              previewBusy={previewJob?.status === "running"}
+              selectedCount={selectedIds.length}
             />
           ) : activeTab === "search" ? (
             <TaggedSearchPage
               options={options}
+              previewAssetVersion={previewAssetVersion}
               onOpenPlayer={openPlayer}
               onOpenVLC={openInVLCById}
               onEditTag={openItem}
@@ -874,11 +973,23 @@ const visibleItems = useMemo(() => {
         </main>
       </div>
 
-      {previewJob && dismissedPreviewJobId !== previewJob.id ? (
-        <PreviewJobNotification
-          job={previewJob}
-          onDismiss={() => setDismissedPreviewJobId(previewJob.id)}
-        />
+      {(moveJob && dismissedMoveJobId !== moveJob.id) ||
+      (previewJob && dismissedPreviewJobId !== previewJob.id) ? (
+        <div className="pointer-events-none fixed right-6 top-6 z-40 flex w-full max-w-md flex-col gap-3">
+          {moveJob && dismissedMoveJobId !== moveJob.id ? (
+            <MoveJobNotification
+              job={moveJob}
+              onDismiss={() => setDismissedMoveJobId(moveJob.id)}
+            />
+          ) : null}
+
+          {previewJob && dismissedPreviewJobId !== previewJob.id ? (
+            <PreviewJobNotification
+              job={previewJob}
+              onDismiss={() => setDismissedPreviewJobId(previewJob.id)}
+            />
+          ) : null}
+        </div>
       ) : null}
 
       <MediaDetailDrawer
@@ -886,7 +997,7 @@ const visibleItems = useMemo(() => {
         options={options}
         savingDetails={detailSaving}
         savingTagging={taggingSaving}
-        moving={moving}
+        moving={moving || moveJob?.status === "running"}
         deleting={deleting}
         toolActionBusy={toolActionBusy}
         onClose={() => setSelectedDetail(null)}
@@ -923,11 +1034,12 @@ function PreviewJobNotification(props: {
   const canceled = job.status === "canceled";
   const running = job.status === "running";
 
+  const baseTitle = formatPreviewJobTitle(job);
   const title = running
-    ? "Generating Previews"
+    ? baseTitle
     : canceled
-      ? "Preview Generation Canceled"
-      : "Preview Generation Complete";
+      ? `${baseTitle} Canceled`
+      : `${baseTitle} Complete`;
 
   const accentClass = running
     ? "border-sky-500/30 bg-sky-500/10 text-sky-100"
@@ -936,18 +1048,144 @@ function PreviewJobNotification(props: {
       : "border-emerald-500/30 bg-emerald-500/10 text-emerald-100";
 
   return (
-    <div className="pointer-events-none fixed right-6 top-6 z-40 w-full max-w-md">
-      <div
-        className={`pointer-events-auto rounded-2xl border p-4 shadow-2xl backdrop-blur ${accentClass}`}
-      >
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <div className="text-sm font-semibold">{title}</div>
-            <div className="mt-1 text-xs opacity-80">
-              {job.completed_steps}/{job.total_steps} steps completed across{" "}
-              {job.total_items} item(s)
-            </div>
+    <div
+      className={`pointer-events-auto rounded-2xl border p-4 shadow-2xl backdrop-blur ${accentClass}`}
+    >
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <div className="text-sm font-semibold">{title}</div>
+          <div className="mt-1 text-xs opacity-80">
+            {job.completed_steps}/{job.total_steps} steps completed across{" "}
+            {job.total_items} item(s)
           </div>
+        </div>
+
+        {!running ? (
+          <button
+            type="button"
+            onClick={onDismiss}
+            className="rounded-lg border border-current/20 px-2.5 py-1 text-xs hover:bg-black/10"
+          >
+            Dismiss
+          </button>
+        ) : null}
+      </div>
+
+      <div className="mt-4 h-2 overflow-hidden rounded-full bg-black/20">
+        <div
+          className="h-full rounded-full bg-current transition-all"
+          style={{ width: `${Math.max(0, Math.min(job.progress_percent, 100))}%` }}
+        />
+      </div>
+
+      <div className="mt-3 flex flex-wrap gap-3 text-xs opacity-90">
+        <span>{job.progress_percent}%</span>
+        <span>Success: {job.succeeded_steps}</span>
+        <span>Issues: {job.failed_steps}</span>
+      </div>
+
+      {job.current_title ? (
+        <div className="mt-3 rounded-xl bg-black/10 px-3 py-2 text-xs">
+            <div className="uppercase tracking-wide opacity-70">Current</div>
+            <div className="mt-1 truncate font-medium">{job.current_title}</div>
+          {job.current_stage ? (
+            <div className="mt-1 opacity-80">
+              {formatPreviewStage(job.current_stage)}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      {completed && job.failed_steps === 0 ? (
+        <div className="mt-3 text-xs opacity-90">
+          {job.job_type === "regen_thumbnails"
+            ? "All requested thumbnails finished successfully."
+            : job.job_type === "regen_hovers"
+              ? "All requested hover previews finished successfully."
+              : "All thumbnails and hover previews finished successfully."}
+        </div>
+      ) : null}
+
+      {job.errors.length > 0 ? (
+        <div className="mt-3 rounded-xl bg-black/10 px-3 py-2 text-xs">
+          <div className="font-medium">Recent issues</div>
+          <div className="mt-1 max-h-24 overflow-auto space-y-1 opacity-90">
+            {job.errors.slice(0, 3).map((entry, index) => (
+              <div key={`${entry}-${index}`}>{entry}</div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function formatPreviewJobTitle(job: PreviewGenerationJob) {
+  switch (job.job_type) {
+    case "regen_thumbnails":
+      return "Thumbnail Regeneration";
+    case "regen_hovers":
+      return "Hover Regeneration";
+    default:
+      return "Preview Generation";
+  }
+}
+
+function formatPreviewStage(stage: string) {
+  switch (stage) {
+    case "thumbnail":
+      return "Generating thumbnail";
+    case "hover":
+      return "Generating hover preview";
+    default:
+      return stage || "Working";
+  }
+}
+
+function MoveJobNotification(props: {
+  job: MoveJob;
+  onDismiss: () => void;
+}) {
+  const { job, onDismiss } = props;
+  const [expanded, setExpanded] = useState(false);
+
+  const running = job.status === "running";
+  const completed = job.status === "completed";
+  const pendingCount = job.items.filter((item) => item.status === "pending").length;
+  const currentCount = job.items.filter((item) => item.status === "running").length;
+  const doneCount = job.items.filter((item) =>
+    item.status === "moved" ||
+    item.status === "already_managed" ||
+    item.status === "failed"
+  ).length;
+
+  const title = running ? "Moving To Vault" : "Move Job Complete";
+  const accentClass = running
+    ? "border-amber-500/30 bg-amber-500/10 text-amber-100"
+    : job.failed_items > 0
+      ? "border-orange-500/30 bg-orange-500/10 text-orange-100"
+      : "border-emerald-500/30 bg-emerald-500/10 text-emerald-100";
+
+  return (
+    <div
+      className={`pointer-events-auto rounded-2xl border p-4 shadow-2xl backdrop-blur ${accentClass}`}
+    >
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <div className="text-sm font-semibold">{title}</div>
+          <div className="mt-1 text-xs opacity-80">
+            {job.completed_items}/{job.total_items} item(s) processed
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setExpanded((prev) => !prev)}
+            className="rounded-lg border border-current/20 px-2.5 py-1 text-xs hover:bg-black/10"
+          >
+            {expanded ? "Hide Details" : "Details"}
+          </button>
 
           {!running ? (
             <button
@@ -959,58 +1197,148 @@ function PreviewJobNotification(props: {
             </button>
           ) : null}
         </div>
+      </div>
 
-        <div className="mt-4 h-2 overflow-hidden rounded-full bg-black/20">
-          <div
-            className="h-full rounded-full bg-current transition-all"
-            style={{ width: `${Math.max(0, Math.min(job.progress_percent, 100))}%` }}
-          />
+      <div className="mt-4 h-2 overflow-hidden rounded-full bg-black/20">
+        <div
+          className="h-full rounded-full bg-current transition-all"
+          style={{ width: `${Math.max(0, Math.min(job.progress_percent, 100))}%` }}
+        />
+      </div>
+
+      <div className="mt-3 flex flex-wrap gap-3 text-xs opacity-90">
+        <span>{job.progress_percent}%</span>
+        <span>Moved: {job.succeeded_items}</span>
+        <span>Already Moved: {job.already_managed_items}</span>
+        <span>Failed: {job.failed_items}</span>
+      </div>
+
+      {job.current_title ? (
+        <div className="mt-3 rounded-xl bg-black/10 px-3 py-2 text-xs">
+          <div className="uppercase tracking-wide opacity-70">Current</div>
+          <div className="mt-1 truncate font-medium">{job.current_title}</div>
+          {job.current_stage ? (
+            <div className="mt-1 opacity-80">{formatMoveStage(job.current_stage)}</div>
+          ) : null}
         </div>
+      ) : null}
 
-        <div className="mt-3 flex flex-wrap gap-3 text-xs opacity-90">
-          <span>{job.progress_percent}%</span>
-          <span>Success: {job.succeeded_steps}</span>
-          <span>Issues: {job.failed_steps}</span>
+      {expanded ? (
+        <div className="mt-4 space-y-3 rounded-xl bg-black/10 p-3">
+          <div className="grid grid-cols-3 gap-2 text-xs">
+            <DetailStat label="Done" value={String(doneCount)} />
+            <DetailStat label="Current" value={String(currentCount)} />
+            <DetailStat label="Remaining" value={String(pendingCount)} />
+          </div>
+
+          <div className="max-h-72 space-y-3 overflow-auto pr-1">
+            {job.items.map((item) => (
+              <MoveJobItemRow key={item.media_id} item={item} />
+            ))}
+          </div>
         </div>
+      ) : null}
 
-        {job.current_title ? (
-          <div className="mt-3 rounded-xl bg-black/10 px-3 py-2 text-xs">
-            <div className="uppercase tracking-wide opacity-70">Current</div>
-            <div className="mt-1 truncate font-medium">{job.current_title}</div>
-            {job.current_stage ? (
-              <div className="mt-1 opacity-80">
-                {job.current_stage === "thumbnail"
-                  ? "Generating thumbnail strip"
-                  : "Generating hover preview"}
-              </div>
-            ) : null}
-          </div>
-        ) : null}
+      {completed && job.failed_items === 0 ? (
+        <div className="mt-3 text-xs opacity-90">
+          All requested move tasks have been handled.
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
-        {completed && job.failed_steps === 0 ? (
-          <div className="mt-3 text-xs opacity-90">
-            All thumbnails and hover previews finished successfully.
-          </div>
-        ) : null}
+function MoveJobItemRow(props: { item: MoveJob["items"][number] }) {
+  const { item } = props;
+  const barClass =
+    item.status === "failed"
+      ? "bg-red-400"
+      : item.status === "already_managed"
+        ? "bg-sky-400"
+        : item.status === "moved"
+          ? "bg-emerald-400"
+          : "bg-amber-300";
 
-        {job.errors.length > 0 ? (
-          <div className="mt-3 rounded-xl bg-black/10 px-3 py-2 text-xs">
-            <div className="font-medium">Recent issues</div>
-            <div className="mt-1 max-h-24 overflow-auto space-y-1 opacity-90">
-              {job.errors.slice(0, 3).map((entry, index) => (
-                <div key={`${entry}-${index}`}>{entry}</div>
-              ))}
-            </div>
+  return (
+    <div className="rounded-xl border border-white/10 bg-black/10 p-3 text-xs">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="truncate font-medium">
+            {item.title || `#${item.media_id}`}
           </div>
-        ) : null}
+          <div className="mt-1 opacity-80">{formatMoveStage(item.stage)}</div>
+        </div>
+        <span className="shrink-0 rounded-full border border-current/15 px-2 py-0.5 text-[11px]">
+          {formatMoveStatus(item.status)}
+        </span>
+      </div>
+
+      <div className="mt-3 h-2 overflow-hidden rounded-full bg-white/10">
+        <div
+          className={`h-full rounded-full transition-all ${barClass}`}
+          style={{ width: `${Math.max(0, Math.min(item.progress_percent, 100))}%` }}
+        />
+      </div>
+
+      <div className="mt-2 flex items-center justify-between gap-3 opacity-80">
+        <span>{item.progress_percent}%</span>
+        {item.error ? <span className="truncate text-red-200">{item.error}</span> : null}
       </div>
     </div>
   );
 }
 
+function DetailStat(props: { label: string; value: string }) {
+  return (
+    <div className="rounded-xl border border-white/10 bg-black/10 px-3 py-2">
+      <div className="uppercase tracking-wide opacity-70">{props.label}</div>
+      <div className="mt-1 text-sm font-semibold">{props.value}</div>
+    </div>
+  );
+}
+
+function formatMoveStage(stage: string) {
+  switch (stage) {
+    case "queued":
+      return "Queued";
+    case "validating":
+      return "Validating source";
+    case "preparing":
+      return "Preparing destination";
+    case "transferring":
+      return "Transferring file";
+    case "finalizing":
+      return "Updating library record";
+    case "completed":
+      return "Completed";
+    case "failed":
+      return "Failed";
+    default:
+      return stage || "Pending";
+  }
+}
+
+function formatMoveStatus(status: string) {
+  switch (status) {
+    case "moved":
+      return "Moved";
+    case "already_managed":
+      return "Already Moved";
+    case "running":
+      return "Running";
+    case "failed":
+      return "Failed";
+    case "pending":
+      return "Pending";
+    default:
+      return status;
+  }
+}
+
 function LibraryView(props: {
   items: MediaItem[];
   total: number;
+  previewAssetVersion: number;
   mediaType: string;
   taggedStatus: string;
   onMediaTypeChange: (value: string) => void;
@@ -1032,10 +1360,15 @@ function LibraryView(props: {
   onOpenBulkTagging: () => void;
   onBulkMove: () => void;
   bulkMoving: boolean;
+  onRegenThumbnails: () => void;
+  onRegenHovers: () => void;
+  previewBusy: boolean;
+  selectedCount: number;
 }) {
   const {
     items,
     total,
+    previewAssetVersion,
     mediaType,
     taggedStatus,
     onMediaTypeChange,
@@ -1056,13 +1389,16 @@ function LibraryView(props: {
     onOpenBulkTagging,
     onBulkMove,
     bulkMoving,
+    onRegenThumbnails,
+    onRegenHovers,
+    previewBusy,
+    selectedCount,
   } = props;
 
   const safeItems = Array.isArray(items) ? items : [];
   const safeErrors = Array.isArray(scanSummary?.errors)
     ? scanSummary!.errors
     : [];
-  const selectedCount = selectedIds.length;
 
   return (
     <div className="grid gap-6">
@@ -1089,6 +1425,22 @@ function LibraryView(props: {
               className="rounded-lg bg-white px-4 py-2 text-sm font-medium text-black disabled:cursor-not-allowed disabled:opacity-50"
             >
               {scanLoading ? "Scanning..." : "Scan Library"}
+            </button>
+
+            <button
+              onClick={onRegenThumbnails}
+              disabled={previewBusy || safeItems.length === 0}
+              className="rounded-lg border border-zinc-700 px-4 py-2 text-sm text-zinc-200 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {previewBusy ? "Preview Job Running..." : selectedCount > 0 ? "Regen Thumbs (Selected)" : "Regen Thumbs"}
+            </button>
+
+            <button
+              onClick={onRegenHovers}
+              disabled={previewBusy || safeItems.length === 0}
+              className="rounded-lg border border-zinc-700 px-4 py-2 text-sm text-zinc-200 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {previewBusy ? "Preview Job Running..." : selectedCount > 0 ? "Regen Hovers (Selected)" : "Regen Hovers"}
             </button>
           </div>
         </div>
@@ -1218,6 +1570,7 @@ function LibraryView(props: {
                 <LibraryCard
                   key={item.id}
                   item={item}
+                  previewAssetVersion={previewAssetVersion}
                   selected={selectedIds.includes(item.id)}
                   onToggleSelected={() => onToggleSelected(item.id)}
                   onOpenTagging={() => onOpenItem(item.id)}

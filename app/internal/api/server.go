@@ -124,6 +124,52 @@ func NewRouter(s *Server) http.Handler {
 		})
 	})
 
+	r.Post("/api/previews/regenerate", func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			MediaIDs []int64 `json:"media_ids"`
+			Target   string  `json:"target"`
+		}
+
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"error": "invalid json body",
+			})
+			return
+		}
+
+		request := previews.JobRequest{
+			MediaIDs:        payload.MediaIDs,
+			ForceRegenerate: true,
+		}
+
+		switch strings.TrimSpace(payload.Target) {
+		case "thumbnails":
+			request.GenerateThumbs = true
+			request.JobType = "regen_thumbnails"
+		case "hovers":
+			request.GenerateHovers = true
+			request.JobType = "regen_hovers"
+		default:
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"error": "invalid preview target",
+			})
+			return
+		}
+
+		job := s.Previewer.StartJob(request)
+		if job == nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"error": "no media ids provided",
+			})
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":  true,
+			"job": job,
+		})
+	})
+
 	r.Get("/api/library", func(w http.ResponseWriter, r *http.Request) {
 		q := strings.TrimSpace(r.URL.Query().Get("q"))
 		mediaType := strings.TrimSpace(r.URL.Query().Get("media_type"))
@@ -228,6 +274,37 @@ func NewRouter(s *Server) http.Handler {
 		}
 
 		writeJSON(w, http.StatusOK, summary)
+	})
+
+	r.Post("/api/library/bulk/move-to-library/start", func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			MediaIDs []int64 `json:"media_ids"`
+		}
+
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"error": "invalid json body",
+			})
+			return
+		}
+
+		job, err := s.Organizer.StartMoveJob(payload.MediaIDs)
+		if err != nil {
+			status := http.StatusBadRequest
+			var moveErr *organizer.Error
+			if errors.As(err, &moveErr) && moveErr.Status > 0 {
+				status = moveErr.Status
+			}
+			writeJSON(w, status, map[string]any{
+				"error": err.Error(),
+			})
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":  true,
+			"job": job,
+		})
 	})
 
 	r.Get("/api/library/{id}", func(w http.ResponseWriter, r *http.Request) {
@@ -393,6 +470,40 @@ func NewRouter(s *Server) http.Handler {
 			"item":        item,
 			"assignments": assignments,
 			"result":      result,
+		})
+	})
+
+	r.Post("/api/library/{id}/move-to-library/start", func(w http.ResponseWriter, r *http.Request) {
+		id, ok := parseIDParam(chi.URLParam(r, "id"))
+		if !ok {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"error": "invalid media id",
+			})
+			return
+		}
+
+		job, err := s.Organizer.StartMoveJob([]int64{id})
+		if err != nil {
+			status := http.StatusBadRequest
+			var moveErr *organizer.Error
+			if errors.As(err, &moveErr) && moveErr.Status > 0 {
+				status = moveErr.Status
+			}
+			writeJSON(w, status, map[string]any{
+				"error": err.Error(),
+			})
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":  true,
+			"job": job,
+		})
+	})
+
+	r.Get("/api/moves/progress", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"job": s.Organizer.GetCurrentJobStatus(),
 		})
 	})
 

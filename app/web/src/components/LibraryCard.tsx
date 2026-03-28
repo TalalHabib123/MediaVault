@@ -4,6 +4,7 @@ import { apiFetch } from "../lib/api";
 
 type Props = {
   item: MediaItem;
+  previewAssetVersion: number;
   selected: boolean;
   onToggleSelected: () => void;
   onOpenTagging: () => void;
@@ -12,6 +13,7 @@ type Props = {
 
 export default function LibraryCard({
   item,
+  previewAssetVersion,
   selected,
   onToggleSelected,
   onOpenTagging,
@@ -20,6 +22,9 @@ export default function LibraryCard({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [hovered, setHovered] = useState(false);
   const [videoMounted, setVideoMounted] = useState(false);
+  const movedToVault = Boolean(item.canonical_path?.trim());
+  const thumbnailSrc = `/api/library/${item.id}/thumbnail?v=${previewAssetVersion}`;
+  const hoverPreviewSrc = `/api/library/${item.id}/hover-preview?v=${previewAssetVersion}`;
 
   const [toolActionBusy, setToolActionBusy] = useState(false);
 
@@ -70,7 +75,7 @@ export default function LibraryCard({
     >
       <div className="relative aspect-video w-full overflow-hidden bg-black">
         <img
-          src={`/api/library/${item.id}/thumbnail`}
+          src={thumbnailSrc}
           alt={item.title}
           className={`absolute inset-0 h-full w-full object-contain transition-opacity duration-200 ${
             hovered ? "opacity-0" : "opacity-100"
@@ -81,7 +86,7 @@ export default function LibraryCard({
         {videoMounted ? (
           <video
             ref={videoRef}
-            src={`/api/library/${item.id}/hover-preview`}
+            src={hoverPreviewSrc}
             muted
             loop
             playsInline
@@ -95,6 +100,7 @@ export default function LibraryCard({
         <div className="pointer-events-none absolute left-3 top-3 flex flex-wrap gap-2">
           <Badge>{formatMediaType(item.media_type)}</Badge>
           <StatusBadge tagged={item.is_tagged} />
+          {movedToVault ? <MovedBadge /> : null}
           {item.media_type === "series_episode" &&
           item.season_number > 0 &&
           item.episode_number > 0 ? (
@@ -193,6 +199,14 @@ function StatusBadge({ tagged }: { tagged: boolean }) {
       }`}
     >
       {tagged ? "Tagged" : "Untagged"}
+    </span>
+  );
+}
+
+function MovedBadge() {
+  return (
+    <span className="rounded-full border border-sky-500/40 bg-sky-500/10 px-2.5 py-1 text-xs text-sky-200">
+      Moved
     </span>
   );
 }
