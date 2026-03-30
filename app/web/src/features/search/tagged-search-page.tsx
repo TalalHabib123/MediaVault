@@ -189,7 +189,7 @@ export function TaggedSearchPage({
       <aside className="surface-card h-fit p-5 xl:sticky xl:top-6">
         <div className="page-kicker">Discovery</div>
         <h2 className="brand-title mt-3 text-3xl">Tagged Search</h2>
-        <p className="mt-2 text-sm text-[var(--text-muted)]">
+        <p className="mt-2 text-sm text-(--text-muted)">
           Search only tagged content with advanced filters.
         </p>
 
@@ -298,12 +298,12 @@ export function TaggedSearchPage({
         <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
           <div>
             <h3 className="text-lg font-medium">Results</h3>
-            <p className="mt-1 text-sm text-[var(--text-muted)]">
+            <p className="mt-1 text-sm text-(--text-muted)">
               {loading ? "Searching..." : `${data.total} tagged result(s) found`}
             </p>
           </div>
 
-          <div className="text-sm text-[var(--text-muted)]">
+          <div className="text-sm text-(--text-muted)">
             Page {data.page} of {Math.max(data.total_pages, 1)}
           </div>
         </div>
@@ -364,7 +364,7 @@ export function TaggedSearchPage({
 function FieldBlock(props: { label: string; children: React.ReactNode }) {
   return (
     <label className="grid gap-2">
-      <span className="text-xs uppercase tracking-[0.24em] text-[var(--text-muted)]">
+      <span className="text-xs uppercase tracking-[0.24em] text-(--text-muted)">
         {props.label}
       </span>
       {props.children}
@@ -380,12 +380,12 @@ function FilterGroup<T extends number | string>(props: {
 }) {
   return (
     <div className="grid gap-2">
-      <div className="text-xs uppercase tracking-[0.24em] text-[var(--text-muted)]">
+      <div className="text-xs uppercase tracking-[0.24em] text-(--text-muted)">
         {props.title}
       </div>
       <div className="surface-muted flex max-h-40 flex-wrap gap-2 overflow-auto rounded-[1.15rem] p-3">
         {props.items.length === 0 ? (
-          <div className="text-sm text-[var(--text-muted)]">No options</div>
+          <div className="text-sm text-(--text-muted)">No options</div>
         ) : (
           props.items.map((item) => {
             const active = props.selected.includes(item.id);

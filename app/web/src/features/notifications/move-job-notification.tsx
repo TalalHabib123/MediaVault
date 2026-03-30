@@ -25,10 +25,10 @@ export function MoveJobNotification(props: {
     <Card
       className={`pointer-events-auto p-4 ${
         running
-          ? "border-[var(--warning-border)]"
+          ? "border-(--warning-border)"
           : job.failed_items > 0
-            ? "border-[var(--warning-border)]"
-            : "border-[var(--success-border)]"
+            ? "border-(--warning-border)"
+            : "border-(--success-border)"
       }`}
     >
       <div className="flex items-start justify-between gap-4">
@@ -36,7 +36,7 @@ export function MoveJobNotification(props: {
           <div className="text-sm font-semibold">
             {running ? "Moving To Vault" : "Move Job Complete"}
           </div>
-          <div className="mt-1 text-xs text-[var(--text-muted)]">
+          <div className="mt-1 text-xs text-(--text-muted)">
             {job.completed_items}/{job.total_items} item(s) processed
           </div>
         </div>
@@ -55,7 +55,7 @@ export function MoveJobNotification(props: {
 
       <div className="progress-track mt-4">
         <div
-          className="progress-fill bg-[var(--warning)]"
+          className="progress-fill bg-(--warning)"
           style={{ width: `${Math.max(0, Math.min(job.progress_percent, 100))}%` }}
         />
       </div>
@@ -76,7 +76,7 @@ export function MoveJobNotification(props: {
             {job.current_title}
           </div>
           {job.current_stage ? (
-            <div className="mt-1 text-[var(--text-muted)]">
+            <div className="mt-1 text-(--text-muted)">
               {formatMoveStage(job.current_stage)}
             </div>
           ) : null}
@@ -100,7 +100,7 @@ export function MoveJobNotification(props: {
       ) : null}
 
       {completed && job.failed_items === 0 ? (
-        <div className="mt-3 text-xs text-[var(--text-muted)]">
+        <div className="mt-3 text-xs text-(--text-muted)">
           All requested move tasks have been handled.
         </div>
       ) : null}
@@ -120,13 +120,13 @@ function MoveJobItemRow(props: { item: MoveJob["items"][number] }) {
           : "bg-[var(--warning)]";
 
   return (
-    <div className="rounded-[1rem] border border-[var(--border-subtle)] bg-[var(--surface-2)] p-3 text-xs">
+    <div className="rounded-2xl border border-(--border-subtle) bg-(--surface-2) p-3 text-xs">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="truncate text-sm font-medium">
             {item.title || `#${item.media_id}`}
           </div>
-          <div className="mt-1 text-[var(--text-muted)]">
+          <div className="mt-1 text-(--text-muted)">
             {formatMoveStage(item.stage)}
           </div>
         </div>
@@ -140,7 +140,7 @@ function MoveJobItemRow(props: { item: MoveJob["items"][number] }) {
         />
       </div>
 
-      <div className="mt-2 flex items-center justify-between gap-3 text-[var(--text-muted)]">
+      <div className="mt-2 flex items-center justify-between gap-3 text-(--text-muted)">
         <span>{item.progress_percent}%</span>
         {item.error ? <span className="truncate">{item.error}</span> : null}
       </div>
@@ -150,7 +150,7 @@ function MoveJobItemRow(props: { item: MoveJob["items"][number] }) {
 
 function DetailStat(props: { label: string; value: string }) {
   return (
-    <div className="rounded-[1rem] border border-[var(--border-subtle)] bg-[var(--surface-2)] px-3 py-2">
+    <div className="rounded-2xl border border-(--border-subtle) bg-(--surface-2) px-3 py-2">
       <div className="page-kicker">{props.label}</div>
       <div className="mt-1 text-sm font-semibold">{props.value}</div>
     </div>

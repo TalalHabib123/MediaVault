@@ -45,6 +45,12 @@ const emptyOptions: MetadataOptions = {
   series: [],
 };
 
+const DISMISSED_PREVIEW_JOB_STORAGE_KEY =
+  "mediavault-dismissed-preview-job-id";
+const DISMISSED_MOVE_JOB_STORAGE_KEY = "mediavault-dismissed-move-job-id";
+const SUCCESS_ALERT_DURATION_MS = 5000;
+const ERROR_ALERT_DURATION_MS = 8000;
+
 function setStringParam(params: URLSearchParams, key: string, value: string) {
   if (!value.trim()) {
     params.delete(key);
@@ -82,9 +88,9 @@ export function useDashboardController() {
   const [moveJob, setMoveJob] = useState<MoveJob | null>(null);
   const [dismissedPreviewJobId, setDismissedPreviewJobId] = useState<
     string | null
-  >(null);
+  >(() => readStoredString(DISMISSED_PREVIEW_JOB_STORAGE_KEY));
   const [dismissedMoveJobId, setDismissedMoveJobId] = useState<string | null>(
-    null,
+    () => readStoredString(DISMISSED_MOVE_JOB_STORAGE_KEY),
   );
   const completedPreviewJobRef = useRef<string | null>(null);
   const completedMoveJobRef = useRef<string | null>(null);
@@ -148,6 +154,41 @@ export function useDashboardController() {
 
     return () => window.clearInterval(interval);
   }, [moveJob?.id, moveJob?.status]);
+
+  useEffect(() => {
+    writeStoredString(
+      DISMISSED_PREVIEW_JOB_STORAGE_KEY,
+      dismissedPreviewJobId,
+    );
+  }, [dismissedPreviewJobId]);
+
+  useEffect(() => {
+    writeStoredString(DISMISSED_MOVE_JOB_STORAGE_KEY, dismissedMoveJobId);
+  }, [dismissedMoveJobId]);
+
+  useEffect(() => {
+    if (!message) {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      setMessage((current) => (current === message ? "" : current));
+    }, SUCCESS_ALERT_DURATION_MS);
+
+    return () => window.clearTimeout(timeout);
+  }, [message]);
+
+  useEffect(() => {
+    if (!error) {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      setError((current) => (current === error ? "" : current));
+    }, ERROR_ALERT_DURATION_MS);
+
+    return () => window.clearTimeout(timeout);
+  }, [error]);
 
   useEffect(() => {
     if (!previewJob) return;
@@ -896,4 +937,26 @@ function sortCategories(items: Category[]) {
 
 function sortSeries(items: Series[]) {
   return [...items].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function readStoredString(key: string) {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  const value = window.sessionStorage.getItem(key);
+  return value && value.trim() ? value : null;
+}
+
+function writeStoredString(key: string, value: string | null) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  if (!value) {
+    window.sessionStorage.removeItem(key);
+    return;
+  }
+
+  window.sessionStorage.setItem(key, value);
 }

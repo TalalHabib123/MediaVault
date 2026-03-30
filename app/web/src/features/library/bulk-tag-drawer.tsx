@@ -81,7 +81,7 @@ export function BulkTagDrawer({
             <h2 className="brand-title mt-2 text-3xl">
               Apply to {selectedCount} selected item(s)
             </h2>
-            <p className="mt-3 max-w-xl text-sm leading-6 text-[var(--text-muted)]">
+            <p className="mt-3 max-w-xl text-sm leading-6 text-(--text-muted)">
               People, categories, and tags are added to every selected item.
               Company and series remain optional set or clear actions.
             </p>

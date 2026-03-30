@@ -27,7 +27,7 @@ export function DashboardHeader({
         <div className="max-w-3xl">
           <div className="page-kicker">{eyebrow}</div>
           <h1 className="brand-title mt-3 text-4xl leading-tight">{title}</h1>
-          <p className="mt-3 max-w-2xl text-sm leading-6 text-[var(--text-muted)]">
+          <p className="mt-3 max-w-2xl text-sm leading-6 text-(--text-muted)">
             {description}
           </p>
 
@@ -53,7 +53,7 @@ export function DashboardHeader({
           </Button>
 
           <div className="surface-muted flex items-center gap-3 rounded-full px-4 py-2">
-            <div className="text-xs uppercase tracking-[0.24em] text-[var(--text-muted)]">
+            <div className="text-xs uppercase tracking-[0.24em] text-(--text-muted)">
               Theme
             </div>
             <Select

@@ -51,7 +51,7 @@ export function LibraryPage(props: Props) {
           <div>
             <div className="page-kicker">Operations</div>
             <h2 className="brand-title mt-2 text-3xl">Scan and control the vault</h2>
-            <p className="mt-3 max-w-2xl text-sm leading-6 text-[var(--text-muted)]">
+            <p className="mt-3 max-w-2xl text-sm leading-6 text-(--text-muted)">
               The library surface keeps discovery, cleanup, preview generation,
               and move workflows in one place while preserving the current media
               management logic.
@@ -272,7 +272,7 @@ function FieldBlock(props: {
 }) {
   return (
     <label className="grid gap-2">
-      <span className="text-xs uppercase tracking-[0.24em] text-[var(--text-muted)]">
+      <span className="text-xs uppercase tracking-[0.24em] text-(--text-muted)">
         {props.label}
       </span>
       {props.children}

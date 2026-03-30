@@ -16,10 +16,10 @@ export function PreviewJobNotification(props: {
     <Card
       className={`pointer-events-auto p-4 ${
         running
-          ? "border-[var(--info-border)]"
+          ? "border-(--info-border)"
           : canceled
-            ? "border-[var(--warning-border)]"
-            : "border-[var(--success-border)]"
+            ? "border-(--warning-border)"
+            : "border-(--success-border)"
       }`}
     >
       <div className="flex items-start justify-between gap-4">
@@ -31,7 +31,7 @@ export function PreviewJobNotification(props: {
                 ? `${formatPreviewJobTitle(job)} Canceled`
                 : `${formatPreviewJobTitle(job)} Complete`}
           </div>
-          <div className="mt-1 text-xs text-[var(--text-muted)]">
+          <div className="mt-1 text-xs text-(--text-muted)">
             {job.completed_steps}/{job.total_steps} steps across {job.total_items}{" "}
             item(s)
           </div>
@@ -46,7 +46,7 @@ export function PreviewJobNotification(props: {
 
       <div className="progress-track mt-4">
         <div
-          className="progress-fill bg-[var(--info)]"
+          className="progress-fill bg-(--info)"
           style={{ width: `${Math.max(0, Math.min(job.progress_percent, 100))}%` }}
         />
       </div>
@@ -66,7 +66,7 @@ export function PreviewJobNotification(props: {
             {job.current_title}
           </div>
           {job.current_stage ? (
-            <div className="mt-1 text-[var(--text-muted)]">
+            <div className="mt-1 text-(--text-muted)">
               {formatPreviewStage(job.current_stage)}
             </div>
           ) : null}
@@ -74,7 +74,7 @@ export function PreviewJobNotification(props: {
       ) : null}
 
       {completed && job.failed_steps === 0 ? (
-        <div className="mt-3 text-xs text-[var(--text-muted)]">
+        <div className="mt-3 text-xs text-(--text-muted)">
           {job.job_type === "regen_thumbnails"
             ? "All requested thumbnails finished successfully."
             : job.job_type === "regen_hovers"
@@ -86,7 +86,7 @@ export function PreviewJobNotification(props: {
       {job.errors.length > 0 ? (
         <div className="surface-muted mt-4 rounded-[1.1rem] p-3 text-xs">
           <div className="font-medium">Recent issues</div>
-          <div className="mt-2 grid gap-1 text-[var(--text-muted)]">
+          <div className="mt-2 grid gap-1 text-(--text-muted)">
             {job.errors.slice(0, 3).map((entry, index) => (
               <div key={`${entry}-${index}`}>{entry}</div>
             ))}

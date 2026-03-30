@@ -144,7 +144,7 @@ export function MetadataPage({
           <h2 className="brand-title mt-2 text-3xl">
             Shape reusable catalog data
           </h2>
-          <p className="mt-3 max-w-3xl text-sm leading-6 text-[var(--text-muted)]">
+          <p className="mt-3 max-w-3xl text-sm leading-6 text-(--text-muted)">
             Build reusable companies, people, series, categories, and tags
             without changing the current metadata behavior.
           </p>
@@ -346,7 +346,7 @@ function SimpleList(props: { items: string[]; emptyText: string }) {
         props.items.map((item) => (
           <div
             key={item}
-            className="surface-muted rounded-[1rem] px-3 py-3 text-sm"
+            className="surface-muted rounded-2xl px-3 py-3 text-sm"
           >
             {item}
           </div>

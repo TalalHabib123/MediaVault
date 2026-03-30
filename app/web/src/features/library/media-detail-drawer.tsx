@@ -269,7 +269,7 @@ export function MediaDetailDrawer({
               </Badge>
               {movedToVault ? <Badge variant="info">Moved</Badge> : null}
             </div>
-            <p className="mt-3 max-w-2xl break-all text-sm text-[var(--text-muted)]">
+            <p className="mt-3 max-w-2xl break-all text-sm text-(--text-muted)">
               {detail.item.file_name}
             </p>
           </div>
@@ -558,7 +558,7 @@ export function MediaDetailDrawer({
               description="Moves the file out of its source location into the configured library root."
             />
             <CardContent className="flex items-center justify-between gap-4">
-              <div className="text-sm text-[var(--text-muted)]">
+              <div className="text-sm text-(--text-muted)">
                 Use this when the file should be formally managed inside the
                 vault and protected from accidental double moves.
               </div>
@@ -575,11 +575,11 @@ export function MediaDetailDrawer({
           <section className="drawer-section drawer-section-danger">
             <div className="flex flex-col gap-4">
               <div>
-                <div className="page-kicker text-[var(--danger)]">Danger Zone</div>
-                <h3 className="mt-2 text-xl font-semibold text-[var(--text-primary)]">
+                <div className="page-kicker text-(--danger)">Danger Zone</div>
+                <h3 className="mt-2 text-xl font-semibold text-(--text-primary)">
                   Delete or clean up this item
                 </h3>
-                <p className="mt-2 text-sm leading-6 text-[var(--text-muted)]">
+                <p className="mt-2 text-sm leading-6 text-(--text-muted)">
                   File deletion is permanent. DB cleanup removes only the
                   record, so rescans can bring the file back if it still exists
                   in a watched source.
@@ -595,14 +595,14 @@ export function MediaDetailDrawer({
                   }}
                   className={`rounded-[1.15rem] border px-4 py-4 text-left transition ${
                     deleteMode === "delete_file"
-                      ? "border-[var(--danger-border)] bg-[rgba(207,109,103,0.12)]"
-                      : "border-[var(--border-default)] bg-[var(--surface-2)]"
+                      ? "border-(--danger-border) bg-[rgba(207,109,103,0.12)]"
+                      : "border-(--border-default) bg-(--surface-2)"
                   }`}
                 >
-                  <div className="font-semibold text-[var(--text-primary)]">
+                  <div className="font-semibold text-(--text-primary)">
                     Delete File and Remove From Library
                   </div>
-                  <div className="mt-1 text-sm text-[var(--text-muted)]">
+                  <div className="mt-1 text-sm text-(--text-muted)">
                     Recommended for real deletion. Removes the media file,
                     record, and related preview cache.
                   </div>
@@ -616,14 +616,14 @@ export function MediaDetailDrawer({
                   }}
                   className={`rounded-[1.15rem] border px-4 py-4 text-left transition ${
                     deleteMode === "db_only"
-                      ? "border-[var(--warning-border)] bg-[rgba(214,168,108,0.12)]"
-                      : "border-[var(--border-default)] bg-[var(--surface-2)]"
+                      ? "border-(--warning-border) bg-[rgba(214,168,108,0.12)]"
+                      : "border-(--border-default) bg-(--surface-2)"
                   }`}
                 >
-                  <div className="font-semibold text-[var(--text-primary)]">
+                  <div className="font-semibold text-(--text-primary)">
                     DB Cleanup Only
                   </div>
-                  <div className="mt-1 text-sm text-[var(--text-muted)]">
+                  <div className="mt-1 text-sm text-(--text-muted)">
                     Keeps the file on disk and removes only the database entry.
                   </div>
                 </button>
@@ -643,7 +643,7 @@ export function MediaDetailDrawer({
 
               {confirmDelete ? (
                 <div className="surface-muted rounded-[1.25rem] p-4">
-                  <div className="text-sm text-[var(--text-primary)]">
+                  <div className="text-sm text-(--text-primary)">
                     {deleteMode === "delete_file"
                       ? "Confirm permanent file deletion and library cleanup for this item."
                       : "Confirm database-only cleanup for this item."}

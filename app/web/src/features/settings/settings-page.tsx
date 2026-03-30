@@ -43,7 +43,7 @@ export function SettingsPage(props: Props) {
               props.config.paths.sources.map((src, index) => (
                 <div
                   key={`${src}-${index}`}
-                  className="surface-muted flex items-center justify-between gap-3 rounded-[1rem] px-4 py-3"
+                  className="surface-muted flex items-center justify-between gap-3 rounded-2xl px-4 py-3"
                 >
                   <span className="break-all text-sm">{src}</span>
                   <Button
@@ -159,7 +159,7 @@ function SettingsField(props: {
 }) {
   return (
     <label className="grid gap-2">
-      <span className="text-xs uppercase tracking-[0.24em] text-[var(--text-muted)]">
+      <span className="text-xs uppercase tracking-[0.24em] text-(--text-muted)">
         {props.label}
       </span>
       <Input

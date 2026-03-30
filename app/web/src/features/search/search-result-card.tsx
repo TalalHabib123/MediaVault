@@ -81,11 +81,11 @@ export function SearchResultCard({
       </div>
 
       <div className="p-5">
-        <h3 className="truncate text-sm font-semibold text-[var(--text-primary)]">
+        <h3 className="truncate text-sm font-semibold text-(--text-primary)">
           {item.title}
         </h3>
 
-        <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-[var(--text-muted)]">
+        <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-(--text-muted)">
           {item.company_name ? <span>{item.company_name}</span> : null}
           <span>{formatDuration(item.duration_seconds)}</span>
         </div>

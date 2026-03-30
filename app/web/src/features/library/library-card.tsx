@@ -63,7 +63,7 @@ export function LibraryCard({
     <div
       className={`surface-card overflow-hidden transition ${
         selected
-          ? "border-[var(--success-border)] shadow-[0_0_0_1px_rgba(103,188,153,0.18)]"
+          ? "border-(--success-border) shadow-[0_0_0_1px_rgba(103,188,153,0.18)]"
           : ""
       }`}
       onMouseEnter={() => {
@@ -123,26 +123,26 @@ export function LibraryCard({
       </div>
 
       <div className="p-5">
-        <h3 className="truncate text-base font-semibold text-[var(--text-primary)]">
+        <h3 className="truncate text-base font-semibold text-(--text-primary)">
           {item.title}
         </h3>
-        <div className="mt-1 truncate text-sm text-[var(--text-muted)]">
+        <div className="mt-1 truncate text-sm text-(--text-muted)">
           {item.file_name}
         </div>
 
         {item.series_name ? (
-          <div className="mt-2 truncate text-sm text-[var(--text-muted)]">
+          <div className="mt-2 truncate text-sm text-(--text-muted)">
             Series: {item.series_name}
           </div>
         ) : null}
 
         {item.company_name ? (
-          <div className="mt-1 truncate text-sm text-[var(--text-muted)]">
+          <div className="mt-1 truncate text-sm text-(--text-muted)">
             Company: {item.company_name}
           </div>
         ) : null}
 
-        <div className="mt-4 grid gap-2 rounded-[1rem] border border-[var(--border-subtle)] bg-[var(--surface-2)] p-3 text-xs text-[var(--text-muted)]">
+        <div className="mt-4 grid gap-2 rounded-2xl border border-(--border-subtle) bg-(--surface-2) p-3 text-xs text-(--text-muted)">
           <div>Duration: {formatDuration(item.duration_seconds)}</div>
           <div>
             Resolution:{" "}

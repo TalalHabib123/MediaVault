@@ -31,7 +31,7 @@ export function SidebarNav({
 
       <aside
         className={cn(
-          "fixed inset-y-0 left-0 z-50 flex w-[19rem] flex-col border-r border-[var(--border-strong)] bg-[var(--sidebar-bg)] px-5 py-6 shadow-[0_24px_80px_rgba(0,0,0,0.35)] transition-transform duration-300 lg:translate-x-0",
+          "fixed inset-y-0 left-0 z-50 flex w-76 flex-col border-r border-(--border-strong) bg-(--sidebar-bg) px-5 py-6 shadow-[0_24px_80px_rgba(0,0,0,0.35)] transition-transform duration-300 lg:translate-x-0",
           mobileOpen ? "translate-x-0" : "-translate-x-full",
         )}
       >
@@ -40,7 +40,7 @@ export function SidebarNav({
             <div className="brand-mark">MV</div>
             <div className="mt-4">
               <div className="brand-title text-2xl">MediaVault</div>
-              <p className="mt-2 text-sm text-[var(--text-muted)]">
+              <p className="mt-2 text-sm text-(--text-muted)">
                 A polished local-first vault for long-form media and metadata
                 control.
               </p>
@@ -80,7 +80,7 @@ export function SidebarNav({
                     <span className="block text-sm font-semibold">
                       {tab.label}
                     </span>
-                    <span className="mt-1 block text-xs text-[var(--text-muted)]">
+                    <span className="mt-1 block text-xs text-(--text-muted)">
                       {tab.eyebrow}
                     </span>
                   </span>
@@ -92,10 +92,10 @@ export function SidebarNav({
 
         <div className="mt-auto pt-8">
           <div className="surface-muted rounded-[1.25rem] p-4">
-            <div className="text-[11px] uppercase tracking-[0.28em] text-[var(--text-muted)]">
+            <div className="text-[11px] uppercase tracking-[0.28em] text-(--text-muted)">
               Design Mode
             </div>
-            <div className="mt-2 text-sm text-[var(--text-primary)]">
+            <div className="mt-2 text-sm text-(--text-primary)">
               Cinematic vault shell with theme-aware surfaces and reusable UI
               primitives.
             </div>
