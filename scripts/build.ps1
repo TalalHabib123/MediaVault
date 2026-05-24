@@ -5,6 +5,18 @@ function Write-Step($message) {
     Write-Host "==> $message" -ForegroundColor Cyan
 }
 
+function Read-AccessMode {
+    Write-Host ""
+    Write-Host "Select the default access mode for the portable launcher:"
+    Write-Host "  1) Local only (localhost)"
+    Write-Host "  2) LAN mode prompt default (0.0.0.0 after owner setup)"
+    $answer = Read-Host "Mode [1]"
+    if ($answer -eq "2" -or $answer.Trim().ToLowerInvariant() -eq "lan") {
+        return "lan"
+    }
+    return "local"
+}
+
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $AppDir = Join-Path $RepoRoot "app"
 $WebDir = Join-Path $AppDir "web"
@@ -21,6 +33,7 @@ $BundleLogsDir = Join-Path $BundleDir "logs"
 $RepoBinDir = Join-Path $RepoRoot "bin"
 $FFmpegExe = Join-Path $RepoBinDir "ffmpeg.exe"
 $FFprobeExe = Join-Path $RepoBinDir "ffprobe.exe"
+$DefaultAccessMode = Read-AccessMode
 
 if (-not (Test-Path $FFmpegExe)) {
     throw "ffmpeg.exe not found at: $FFmpegExe"
@@ -86,7 +99,7 @@ Write-Step "Writing clean portable config"
 $ConfigJson = @'
 {
   "server": {
-    "host": "127.0.0.1",
+    "host": "localhost",
     "port": 5000
   },
   "paths": {
@@ -102,6 +115,15 @@ $ConfigJson = @'
   },
   "mode": {
     "portable": true
+  },
+  "security": {
+    "auth_enabled": true,
+    "lan_enabled": false,
+    "bind_host": "localhost",
+    "allowed_origins": [],
+    "session_idle_minutes": 720,
+    "remembered_device_days": 30,
+    "failed_login_limit": 5
   }
 }
 '@
@@ -115,16 +137,28 @@ $StartBat = @'
 setlocal
 cd /d "%~dp0"
 
+set "MV_DEFAULT_MODE=__DEFAULT_ACCESS_MODE__"
+echo.
+echo Select MediaVault access mode:
+echo   1^) Local only ^(localhost^)
+echo   2^) LAN mode ^(0.0.0.0 after owner setup^)
+set /p MV_MODE=Mode [%MV_DEFAULT_MODE%]:
+if "%MV_MODE%"=="" set "MV_MODE=%MV_DEFAULT_MODE%"
+if /I "%MV_MODE%"=="2" set "MV_MODE=lan"
+if /I not "%MV_MODE%"=="lan" set "MV_MODE=local"
+set "MEDIAVAULT_ACCESS_MODE=%MV_MODE%"
+
 start "MediaVault" "%~dp0MediaVault.exe"
 
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-  "$url='http://127.0.0.1:5000/api/health';" ^
+  "$url='http://localhost:5000/api/health';" ^
   "$ok=$false;" ^
   "1..40 | ForEach-Object { try { Invoke-WebRequest -UseBasicParsing $url -TimeoutSec 2 | Out-Null; $ok=$true; break } catch { Start-Sleep -Milliseconds 500 } };" ^
-  "Start-Process 'http://127.0.0.1:5000';"
+  "Start-Process 'http://localhost:5000';"
 
 endlocal
 '@
+$StartBat = $StartBat.Replace("__DEFAULT_ACCESS_MODE__", $DefaultAccessMode)
 Set-Content -Path (Join-Path $BundleDir "Start-MediaVault.bat") -Value $StartBat -Encoding ASCII
 
 Write-Step "Creating optional stop script"

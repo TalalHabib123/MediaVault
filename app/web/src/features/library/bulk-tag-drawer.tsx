@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import type { BulkTaggingPayload, MetadataOptions } from "../../types";
 import { Alert } from "../../components/ui/alert";
 import { Button } from "../../components/ui/button";
@@ -16,12 +16,19 @@ type Props = {
 
 export function BulkTagDrawer({
   open,
+  ...props
+}: Props) {
+  if (!open) return null;
+  return <BulkTagDrawerPanel {...props} />;
+}
+
+function BulkTagDrawerPanel({
   selectedCount,
   options,
   saving,
   onClose,
   onApply,
-}: Props) {
+}: Omit<Props, "open">) {
   const [setCompany, setSetCompany] = useState(false);
   const [companyId, setCompanyId] = useState<number | "">("");
   const [setSeries, setSetSeries] = useState(false);
@@ -34,19 +41,6 @@ export function BulkTagDrawer({
     () => options.categories.filter((item) => item.kind === "main"),
     [options.categories],
   );
-
-  useEffect(() => {
-    if (!open) return;
-    setSetCompany(false);
-    setCompanyId("");
-    setSetSeries(false);
-    setSeriesId("");
-    setPersonIds([]);
-    setCategoryIds([]);
-    setTagIds([]);
-  }, [open]);
-
-  if (!open) return null;
 
   function toggleId(list: number[], value: number) {
     return list.includes(value)

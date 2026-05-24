@@ -1,63 +1,44 @@
 # MediaVault Design System
 
 ## Visual Direction
-- Tone: cinematic vault, editorial, polished, local-first
-- Mood: premium archive rather than generic admin panel
-- Density: compact enough for management work, spacious enough for browsing
 
-## Theme Modes
-- `system`: follow OS preference
-- `dark`: default vault presentation with layered charcoal, steel, and bronze accents
-- `light`: parchment-and-stone interpretation of the same system, not a flat white dashboard
+- Tone: dark cinematic local media vault
+- Mood: private desktop library, not a generic admin panel
+- Density: media-first browsing with compact management controls
+- Accent: restrained red for primary actions, active navigation, and progress
+
+## Theme
+
+- Dark is the primary experience.
+- Light mode remains available for accessibility and system preference, but it uses neutral grays rather than a separate brand palette.
 
 ## Tokens
-- Backgrounds
-  - app background
-  - soft ambient background
-  - primary surface
-  - secondary surface
-  - elevated surface
-- Borders
-  - default border
-  - strong border
-  - accent border
-- Text
-  - primary text
-  - muted text
-  - inverted text
-- Status
-  - success
-  - warning
-  - danger
-  - info
-- Brand
-  - bronze accent
-  - steel accent
-  - vault glow
+
+- Background: `#08090b`
+- Surfaces: `#101114`, `#17191d`, `#202329`
+- Text: `#f4f4f5`, `#b5b7bd`, `#777b84`
+- Accent: `#d93025`
+- Success/warning/danger: green, amber, red semantic colors
 
 ## Typography
-- Display: classic serif stack for product identity and page titles
-- Interface: clean sans stack for controls and metadata
-- Keep headings bold and short; body copy should stay restrained and readable
 
-## Surfaces
-- Use layered cards instead of flat panels
-- Keep rounded corners generous but not playful
-- Prefer soft inner highlights and faint shadows over heavy borders
-- Use gradients sparingly for shell/background only
+- Single modern sans stack based on Inter and system UI.
+- Page titles: 28-36px, bold.
+- Section titles: 18-22px, bold.
+- Card titles: 14-16px, semibold.
+- Metadata and captions: 11-13px.
 
-## Navigation
-- Sidebar is the primary dashboard navigation
-- Desktop: persistent rail with clear active state
-- Mobile: collapsible overlay sheet
-- Page header carries title, context text, and utility controls like theme switching
+## Components
 
-## Motion
-- Quick transitions on hover, opacity, and progress bars
-- No large spring animations or delayed interactions
-- Keep motion decorative, not structural
+- `AppLayout` behavior is split across `DashboardShell`, `SidebarNav`, and `DashboardHeader`.
+- Library browsing uses `LibraryPage`, `LibraryCard`, and table mode inside the feature module.
+- Details, bulk tagging, scanner, metadata, settings, and player live under `src/features`.
+- Reusable primitives stay under `src/components/ui`.
 
-## Notifications
-- Long-running jobs live in a dock
-- Success/error messages appear in a shared alert region
-- Progress cards should clearly show title, counts, current item, and completion state
+## Rules
+
+- Do not show full filesystem paths on cards or table rows by default.
+- Use thumbnails and hover previews as the main visual signal.
+- Keep destructive actions isolated in the detail drawer danger zone.
+- Keep host-only VLC and reveal-folder actions disabled when capabilities say unavailable.
+- Avoid restoring legacy wrappers under `src/components` or route pages under `src/pages`.

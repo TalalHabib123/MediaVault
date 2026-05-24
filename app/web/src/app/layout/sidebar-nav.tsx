@@ -1,6 +1,7 @@
 import { cn } from "../../lib/utils";
 import {
   DASHBOARD_TABS,
+  type DashboardTabMeta,
   type TabKey,
 } from "../../features/dashboard/dashboard-tabs";
 
@@ -9,6 +10,7 @@ type Props = {
   onTabChange: (nextTab: TabKey) => void;
   mobileOpen: boolean;
   onCloseMobile: () => void;
+  scanRunning?: boolean;
 };
 
 export function SidebarNav({
@@ -16,7 +18,21 @@ export function SidebarNav({
   onTabChange,
   mobileOpen,
   onCloseMobile,
+  scanRunning = false,
 }: Props) {
+  const groupedTabs = DASHBOARD_TABS.reduce(
+    (groups, tab) => {
+      groups[tab.group].push(tab);
+      return groups;
+    },
+    {
+      Library: [] as DashboardTabMeta[],
+      Browse: [] as DashboardTabMeta[],
+      Tools: [] as DashboardTabMeta[],
+      System: [] as DashboardTabMeta[],
+    },
+  );
+
   return (
     <>
       <button
@@ -35,15 +51,20 @@ export function SidebarNav({
           mobileOpen ? "translate-x-0" : "-translate-x-full",
         )}
       >
-        <div className="flex items-center justify-between lg:block">
+        <div className="flex items-start justify-between lg:block">
           <div>
             <div className="brand-mark">MV</div>
             <div className="mt-4">
               <div className="brand-title text-2xl">MediaVault</div>
-              <p className="mt-2 text-sm text-(--text-muted)">
-                A polished local-first vault for long-form media and metadata
-                control.
-              </p>
+              <div className="mt-3 inline-flex items-center gap-2 rounded-full border border-(--border-soft) bg-(--surface-2) px-3 py-1.5 text-xs text-(--text-secondary)">
+                <span
+                  className={cn(
+                    "h-2 w-2 rounded-full",
+                    scanRunning ? "bg-(--warning)" : "bg-(--success)",
+                  )}
+                />
+                {scanRunning ? "Scan running" : "Local vault ready"}
+              </div>
             </div>
           </div>
 
@@ -52,54 +73,54 @@ export function SidebarNav({
             className="btn btn-ghost btn-icon lg:hidden"
             onClick={onCloseMobile}
           >
-            X
+            Close
           </button>
         </div>
 
-        <nav className="mt-8 grid gap-2">
-          {DASHBOARD_TABS.map((tab, index) => {
-            const active = tab.key === activeTab;
-            return (
-              <button
-                key={tab.key}
-                type="button"
-                onClick={() => {
-                  onTabChange(tab.key);
-                  onCloseMobile();
-                }}
-                className={cn(
-                  "sidebar-link text-left",
-                  active && "sidebar-link-active",
-                )}
-              >
-                <div className="flex items-start gap-3">
-                  <span className="sidebar-link-index">
-                    {String(index + 1).padStart(2, "0")}
-                  </span>
-                  <span className="min-w-0">
+        <nav className="mt-7 grid gap-6 overflow-y-auto pr-1">
+          {Object.entries(groupedTabs).map(([group, tabs]) => (
+            <div key={group} className="grid gap-2">
+              <div className="sidebar-group-label">{group}</div>
+              {tabs.map((tab) => {
+                const active = tab.key === activeTab;
+                return (
+                  <button
+                    key={tab.key}
+                    type="button"
+                    onClick={() => {
+                      onTabChange(tab.key);
+                      onCloseMobile();
+                    }}
+                    className={cn(
+                      "sidebar-link text-left",
+                      active && "sidebar-link-active",
+                    )}
+                  >
                     <span className="block text-sm font-semibold">
                       {tab.label}
                     </span>
                     <span className="mt-1 block text-xs text-(--text-muted)">
-                      {tab.eyebrow}
+                      {tab.description}
                     </span>
-                  </span>
-                </div>
-              </button>
-            );
-          })}
+                  </button>
+                );
+              })}
+            </div>
+          ))}
         </nav>
 
         <div className="mt-auto pt-8">
-          <div className="surface-muted rounded-[1.25rem] p-4">
-            <div className="text-[11px] uppercase tracking-[0.28em] text-(--text-muted)">
-              Design Mode
+          <a className="sidebar-link block" href="/security">
+            <div className="flex items-start gap-3">
+              <span className="sidebar-link-index">SEC</span>
+              <span>
+                <span className="block text-sm font-semibold">Security</span>
+                <span className="mt-1 block text-xs text-(--text-muted)">
+                  Account and LAN access
+                </span>
+              </span>
             </div>
-            <div className="mt-2 text-sm text-(--text-primary)">
-              Cinematic vault shell with theme-aware surfaces and reusable UI
-              primitives.
-            </div>
-          </div>
+          </a>
         </div>
       </aside>
     </>

@@ -1,6 +1,6 @@
 {
   "server": {
-    "host": "127.0.0.1",
+    "host": "localhost",
     "port": 5000
   },
   "paths": {
@@ -19,5 +19,14 @@
   },
   "mode": {
     "portable": true
+  },
+  "security": {
+    "auth_enabled": true,
+    "lan_enabled": false,
+    "bind_host": "localhost",
+    "allowed_origins": [],
+    "session_idle_minutes": 720,
+    "remembered_device_days": 30,
+    "failed_login_limit": 5
   }
 }

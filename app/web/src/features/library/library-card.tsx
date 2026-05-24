@@ -3,6 +3,11 @@ import { apiFetch } from "../../lib/api";
 import type { MediaItem } from "../../types";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
+import {
+  formatDuration,
+  formatMediaType,
+  formatResolution,
+} from "./media-format";
 
 type Props = {
   item: MediaItem;
@@ -11,6 +16,7 @@ type Props = {
   onToggleSelected: () => void;
   onOpenTagging: () => void;
   onOpenPlayer: () => void;
+  openVlcAvailable: boolean;
 };
 
 export function LibraryCard({
@@ -20,10 +26,12 @@ export function LibraryCard({
   onToggleSelected,
   onOpenTagging,
   onOpenPlayer,
+  openVlcAvailable,
 }: Props) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [hovered, setHovered] = useState(false);
   const [videoMounted, setVideoMounted] = useState(false);
+  const [imageFailed, setImageFailed] = useState(false);
   const [toolActionBusy, setToolActionBusy] = useState(false);
 
   const movedToVault = Boolean(item.canonical_path?.trim());
@@ -47,6 +55,8 @@ export function LibraryCard({
   }, [hovered, videoMounted]);
 
   async function onOpenInVLC() {
+    if (!openVlcAvailable) return;
+
     try {
       setToolActionBusy(true);
       await apiFetch<{ ok: boolean }>(`/api/library/${item.id}/open-vlc`, {
@@ -60,27 +70,28 @@ export function LibraryCard({
   }
 
   return (
-    <div
-      className={`surface-card overflow-hidden transition ${
-        selected
-          ? "border-(--success-border) shadow-[0_0_0_1px_rgba(103,188,153,0.18)]"
-          : ""
-      }`}
+    <article
+      className={`media-card group ${selected ? "media-card-selected" : ""}`}
       onMouseEnter={() => {
         setVideoMounted(true);
         setHovered(true);
       }}
       onMouseLeave={() => setHovered(false)}
     >
-      <div className="media-preview relative aspect-video w-full overflow-hidden">
-        <img
-          src={thumbnailSrc}
-          alt={item.title}
-          className={`absolute inset-0 h-full w-full object-contain transition-opacity duration-200 ${
-            hovered ? "opacity-0" : "opacity-100"
-          }`}
-          loading="lazy"
-        />
+      <div className="media-poster">
+        {!imageFailed ? (
+          <img
+            src={thumbnailSrc}
+            alt={item.title}
+            className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-200 ${
+              hovered ? "opacity-0" : "opacity-100"
+            }`}
+            loading="lazy"
+            onError={() => setImageFailed(true)}
+          />
+        ) : (
+          <MissingThumbnail title={item.title} type={item.media_type} />
+        )}
 
         {videoMounted ? (
           <video
@@ -90,18 +101,16 @@ export function LibraryCard({
             loop
             playsInline
             preload="metadata"
-            className={`absolute inset-0 h-full w-full object-contain transition-opacity duration-200 ${
+            className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-200 ${
               hovered ? "opacity-100" : "opacity-0"
             }`}
           />
         ) : null}
 
-        <div className="pointer-events-none absolute left-3 top-3 flex flex-wrap gap-2">
+        <div className="media-card-gradient" />
+
+        <div className="absolute left-3 top-3 flex flex-wrap gap-2">
           <Badge variant="default">{formatMediaType(item.media_type)}</Badge>
-          <Badge variant={item.is_tagged ? "success" : "warning"}>
-            {item.is_tagged ? "Tagged" : "Untagged"}
-          </Badge>
-          {movedToVault ? <Badge variant="info">Moved</Badge> : null}
           {item.media_type === "series_episode" &&
           item.season_number > 0 &&
           item.episode_number > 0 ? (
@@ -120,89 +129,76 @@ export function LibraryCard({
           />
           Select
         </label>
-      </div>
 
-      <div className="p-5">
-        <h3 className="truncate text-base font-semibold text-(--text-primary)">
-          {item.title}
-        </h3>
-        <div className="mt-1 truncate text-sm text-(--text-muted)">
-          {item.file_name}
-        </div>
-
-        {item.series_name ? (
-          <div className="mt-2 truncate text-sm text-(--text-muted)">
-            Series: {item.series_name}
-          </div>
-        ) : null}
-
-        {item.company_name ? (
-          <div className="mt-1 truncate text-sm text-(--text-muted)">
-            Company: {item.company_name}
-          </div>
-        ) : null}
-
-        <div className="mt-4 grid gap-2 rounded-2xl border border-(--border-subtle) bg-(--surface-2) p-3 text-xs text-(--text-muted)">
-          <div>Duration: {formatDuration(item.duration_seconds)}</div>
-          <div>
-            Resolution:{" "}
-            {item.width > 0 && item.height > 0
-              ? `${item.width}x${item.height}`
-              : "Unknown"}
-          </div>
-          <div>Size: {formatBytes(item.filesize_bytes)}</div>
-        </div>
-
-        <div className="mt-5 flex flex-wrap gap-2">
-          <Button variant="secondary" size="sm" onClick={onOpenTagging}>
-            Edit / Tag
-          </Button>
+        <div className="media-card-actions">
           <Button variant="primary" size="sm" onClick={onOpenPlayer}>
-            Player
+            Play
+          </Button>
+          <Button variant="secondary" size="sm" onClick={onOpenTagging}>
+            Details
           </Button>
           <Button
             onClick={onOpenInVLC}
-            disabled={toolActionBusy}
+            disabled={toolActionBusy || !openVlcAvailable}
             variant="outline"
             size="sm"
+            title={
+              openVlcAvailable
+                ? "Open in VLC"
+                : "VLC opens only on the host PC."
+            }
           >
             VLC
           </Button>
         </div>
       </div>
-    </div>
+
+      <div className="p-4">
+        <h3 className="line-clamp-2 min-h-10 text-[15px] font-semibold leading-5 text-(--text-primary)">
+          {item.title}
+        </h3>
+
+        <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-(--text-secondary)">
+          <span>{formatDuration(item.duration_seconds)}</span>
+          <span>{formatResolution(item)}</span>
+          {item.company_name ? <span>{item.company_name}</span> : null}
+        </div>
+
+        <div className="mt-3 flex flex-wrap gap-2">
+          <Badge variant={item.is_tagged ? "success" : "warning"}>
+            {item.is_tagged ? "Tagged" : "Needs tags"}
+          </Badge>
+          {movedToVault ? <Badge variant="info">Managed</Badge> : null}
+          {item.series_name ? (
+            <Badge variant="default">{item.series_name}</Badge>
+          ) : null}
+        </div>
+      </div>
+    </article>
   );
 }
 
-function formatMediaType(value: MediaItem["media_type"]) {
-  if (value === "series_episode") return "Series Episode";
-  if (value === "movie") return "Movie";
-  return "Video";
-}
+function MissingThumbnail(props: {
+  title: string;
+  type: MediaItem["media_type"];
+}) {
+  const initials = props.title
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase())
+    .join("");
 
-function formatDuration(seconds: number) {
-  if (!seconds || seconds <= 0) return "Unknown";
-
-  const rounded = Math.floor(seconds);
-  const hours = Math.floor(rounded / 3600);
-  const minutes = Math.floor((rounded % 3600) / 60);
-  const secs = rounded % 60;
-
-  if (hours > 0) return `${hours}h ${minutes}m ${secs}s`;
-  return `${minutes}m ${secs}s`;
-}
-
-function formatBytes(bytes: number) {
-  if (!bytes || bytes <= 0) return "Unknown";
-
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  let value = bytes;
-  let unitIndex = 0;
-
-  while (value >= 1024 && unitIndex < units.length - 1) {
-    value /= 1024;
-    unitIndex++;
-  }
-
-  return `${value.toFixed(unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
+  return (
+    <div className="absolute inset-0 grid place-items-center bg-[linear-gradient(135deg,#15171c,#090a0d)]">
+      <div className="text-center">
+        <div className="mx-auto grid h-16 w-16 place-items-center rounded-2xl border border-(--border-soft) bg-(--surface-2) text-xl font-bold text-(--accent)">
+          {initials || "MV"}
+        </div>
+        <div className="mt-3 text-xs text-(--text-secondary)">
+          {formatMediaType(props.type)}
+        </div>
+      </div>
+    </div>
+  );
 }

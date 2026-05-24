@@ -2,6 +2,7 @@ import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import { Card } from "../../components/ui/card";
 import type { PreviewGenerationJob } from "../../types";
+import { formatPreviewJobTitle, formatPreviewStage } from "./job-format";
 
 export function PreviewJobNotification(props: {
   job: PreviewGenerationJob;
@@ -95,26 +96,4 @@ export function PreviewJobNotification(props: {
       ) : null}
     </Card>
   );
-}
-
-export function formatPreviewJobTitle(job: PreviewGenerationJob) {
-  switch (job.job_type) {
-    case "regen_thumbnails":
-      return "Thumbnail Regeneration";
-    case "regen_hovers":
-      return "Hover Regeneration";
-    default:
-      return "Preview Generation";
-  }
-}
-
-export function formatPreviewStage(stage: string) {
-  switch (stage) {
-    case "thumbnail":
-      return "Generating thumbnail";
-    case "hover":
-      return "Generating hover preview";
-    default:
-      return stage || "Working";
-  }
 }

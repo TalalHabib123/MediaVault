@@ -19,6 +19,13 @@ import { Button } from "../../components/ui/button";
 import { Card, CardContent, CardHeader } from "../../components/ui/card";
 import { Input } from "../../components/ui/input";
 import { Select } from "../../components/ui/select";
+import {
+  formatBytes,
+  formatDurationPrecise,
+  formatMediaTypeLong,
+  formatResolution,
+  getCurrentPath,
+} from "./media-format";
 
 type Props = {
   detail: MediaDetailResponse | null;
@@ -47,6 +54,10 @@ type Props = {
   toolActionBusy: boolean;
   onOpenInVLC: () => Promise<void>;
   onRevealFile: () => Promise<void>;
+  openVlcAvailable: boolean;
+  revealFileAvailable: boolean;
+  previewAssetVersion: number;
+  onOpenPlayer: (id: number) => void;
 };
 
 export function MediaDetailDrawer({
@@ -69,6 +80,10 @@ export function MediaDetailDrawer({
   toolActionBusy,
   onOpenInVLC,
   onRevealFile,
+  openVlcAvailable,
+  revealFileAvailable,
+  previewAssetVersion,
+  onOpenPlayer,
 }: Props) {
   const [title, setTitle] = useState("");
   const [mediaType, setMediaType] = useState<MediaType>("video");
@@ -260,14 +275,18 @@ export function MediaDetailDrawer({
       <div className="drawer-shell relative ml-auto h-full w-full max-w-3xl overflow-y-auto p-6 shadow-2xl">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <div className="page-kicker">Media Detail</div>
-            <h2 className="brand-title mt-2 text-3xl">{detail.item.title}</h2>
+            <div className="field-caption">Media Detail</div>
+            <h2 className="mt-2 text-3xl font-bold leading-tight">
+              {detail.item.title}
+            </h2>
             <div className="mt-3 flex flex-wrap gap-2">
-              <Badge variant="default">{formatMediaType(detail.item.media_type)}</Badge>
+              <Badge variant="default">
+                {formatMediaTypeLong(detail.item.media_type)}
+              </Badge>
               <Badge variant={detail.item.is_tagged ? "success" : "warning"}>
                 {detail.item.is_tagged ? "Tagged" : "Untagged"}
               </Badge>
-              {movedToVault ? <Badge variant="info">Moved</Badge> : null}
+              {movedToVault ? <Badge variant="info">Managed</Badge> : null}
             </div>
             <p className="mt-3 max-w-2xl break-all text-sm text-(--text-muted)">
               {detail.item.file_name}
@@ -280,6 +299,60 @@ export function MediaDetailDrawer({
         </div>
 
         <div className="mt-6 grid gap-6">
+          <Card className="overflow-hidden p-0">
+            <div className="detail-preview">
+              <img
+                src={`/api/library/${detail.item.id}/thumbnail?v=${previewAssetVersion}`}
+                alt=""
+                className="h-full w-full object-cover"
+              />
+              <div className="detail-preview-overlay" />
+              <div className="detail-preview-content">
+                <div className="flex flex-wrap gap-2">
+                  <Badge variant="default">
+                    {formatDurationPrecise(detail.item.duration_seconds)}
+                  </Badge>
+                  <Badge variant="info">{formatResolution(detail.item)}</Badge>
+                  {detail.item.company_name ? (
+                    <Badge variant="success">{detail.item.company_name}</Badge>
+                  ) : null}
+                </div>
+                <div className="mt-4 flex flex-wrap gap-3">
+                  <Button
+                    variant="primary"
+                    onClick={() => onOpenPlayer(detail.item.id)}
+                  >
+                    Play In Browser
+                  </Button>
+                  <Button
+                    onClick={onOpenInVLC}
+                    disabled={toolActionBusy || !openVlcAvailable}
+                    variant="secondary"
+                    title={
+                      openVlcAvailable
+                        ? "Open in VLC"
+                        : "VLC opens only on the host PC. Use browser playback on this device."
+                    }
+                  >
+                    Open In VLC
+                  </Button>
+                  <Button
+                    onClick={onRevealFile}
+                    disabled={toolActionBusy || !revealFileAvailable}
+                    variant="outline"
+                    title={
+                      revealFileAvailable
+                        ? "Reveal in folder"
+                        : "Reveal in folder is only available from the host PC."
+                    }
+                  >
+                    Reveal Folder
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </Card>
+
           <Card className="p-6">
             <CardHeader
               title="Manual Media Fields"
@@ -531,21 +604,31 @@ export function MediaDetailDrawer({
 
           <Card className="p-6">
             <CardHeader
-              title="Tool Actions"
-              description="Open the current media in VLC or reveal the resolved path in the file explorer."
+              title="File Actions"
+              description="Host-only actions stay disabled when the request is not coming from the MediaVault machine."
             />
             <CardContent className="flex flex-wrap gap-3">
               <Button
                 onClick={onOpenInVLC}
-                disabled={toolActionBusy}
+                disabled={toolActionBusy || !openVlcAvailable}
                 variant="outline"
+                title={
+                  openVlcAvailable
+                    ? "Open in VLC"
+                    : "VLC opens only on the host PC. Use browser playback on this device."
+                }
               >
                 Open in VLC
               </Button>
               <Button
                 onClick={onRevealFile}
-                disabled={toolActionBusy}
+                disabled={toolActionBusy || !revealFileAvailable}
                 variant="secondary"
+                title={
+                  revealFileAvailable
+                    ? "Reveal in folder"
+                    : "Reveal in folder is only available from the host PC."
+                }
               >
                 Reveal in Folder
               </Button>
@@ -705,7 +788,7 @@ export function MediaDetailDrawer({
               />
               <InfoRow
                 label="Current Path"
-                value={detail.item.canonical_path || detail.item.source_path}
+                value={getCurrentPath(detail.item)}
                 mono
               />
               <InfoRow
@@ -724,15 +807,11 @@ export function MediaDetailDrawer({
               />
               <InfoRow
                 label="Duration"
-                value={formatDuration(detail.item.duration_seconds)}
+                value={formatDurationPrecise(detail.item.duration_seconds)}
               />
               <InfoRow
                 label="Resolution"
-                value={
-                  detail.item.width > 0 && detail.item.height > 0
-                    ? `${detail.item.width}x${detail.item.height}`
-                    : "Unknown"
-                }
+                value={formatResolution(detail.item)}
               />
               <InfoRow
                 label="Video Codec"
@@ -831,32 +910,4 @@ function InfoRow(props: {
       </div>
     </div>
   );
-}
-
-function formatMediaType(value: MediaType) {
-  if (value === "series_episode") return "Series Episode";
-  if (value === "movie") return "Movie";
-  return "Video";
-}
-
-function formatDuration(seconds: number) {
-  if (!seconds || seconds <= 0) return "Unknown";
-  const rounded = Math.floor(seconds);
-  const hours = Math.floor(rounded / 3600);
-  const minutes = Math.floor((rounded % 3600) / 60);
-  const secs = rounded % 60;
-  if (hours > 0) return `${hours}h ${minutes}m ${secs}s`;
-  return `${minutes}m ${secs}s`;
-}
-
-function formatBytes(bytes: number) {
-  if (!bytes || bytes <= 0) return "Unknown";
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  let value = bytes;
-  let unitIndex = 0;
-  while (value >= 1024 && unitIndex < units.length - 1) {
-    value /= 1024;
-    unitIndex++;
-  }
-  return `${value.toFixed(unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
 }

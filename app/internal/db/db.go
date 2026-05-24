@@ -53,11 +53,68 @@ func ensureSchema(db *sqlx.DB) error {
 	if err := createMetadataTables(db); err != nil {
 		return err
 	}
+	if err := createAuthTables(db); err != nil {
+		return err
+	}
 	if err := migrateMediaItemsTable(db); err != nil {
 		return err
 	}
 	if err := ensureIndexes(db); err != nil {
 		return err
+	}
+	return nil
+}
+
+func createAuthTables(db *sqlx.DB) error {
+	queries := []string{
+		`
+		CREATE TABLE IF NOT EXISTS users (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			username TEXT NOT NULL UNIQUE,
+			password_hash TEXT NOT NULL,
+			role TEXT NOT NULL DEFAULT 'owner',
+			is_active INTEGER NOT NULL DEFAULT 1,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			last_login_at TEXT
+		);
+		`,
+		`
+		CREATE TABLE IF NOT EXISTS auth_sessions (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			user_id INTEGER NOT NULL,
+			token_hash TEXT NOT NULL UNIQUE,
+			csrf_secret TEXT NOT NULL,
+			device_label TEXT NOT NULL DEFAULT '',
+			user_agent TEXT NOT NULL DEFAULT '',
+			remote_addr TEXT NOT NULL DEFAULT '',
+			remember_device INTEGER NOT NULL DEFAULT 0,
+			created_at TEXT NOT NULL,
+			last_seen_at TEXT NOT NULL,
+			expires_at TEXT NOT NULL,
+			revoked_at TEXT,
+			FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+		);
+		`,
+		`
+		CREATE TABLE IF NOT EXISTS auth_events (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			user_id INTEGER,
+			event_type TEXT NOT NULL,
+			success INTEGER NOT NULL DEFAULT 1,
+			remote_addr TEXT NOT NULL DEFAULT '',
+			user_agent TEXT NOT NULL DEFAULT '',
+			details TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+		);
+		`,
+	}
+
+	for _, query := range queries {
+		if _, err := db.Exec(query); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -256,6 +313,11 @@ func ensureIndexes(db *sqlx.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_media_people_media_id ON media_people(media_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_media_categories_media_id ON media_categories(media_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_media_tags_media_id ON media_tags(media_id)`,
+
+		`CREATE INDEX IF NOT EXISTS idx_auth_sessions_user_id ON auth_sessions(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires_at ON auth_sessions(expires_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_auth_events_created_at ON auth_events(created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_auth_events_user_id ON auth_events(user_id)`,
 	}
 
 	for _, query := range indexes {

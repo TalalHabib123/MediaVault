@@ -268,9 +268,60 @@ export type SearchTaggedResponse = {
   sort_dir: "asc" | "desc" | string;
 };
 
+export type AuthUser = {
+  id: number;
+  username: string;
+  role: "owner" | "viewer" | string;
+};
+
+export type AuthStatusResponse = {
+  setup_required: boolean;
+  authenticated: boolean;
+  user: AuthUser | null;
+  lan_enabled: boolean;
+};
+
+export type AuthSession = {
+  id: number;
+  device_label: string;
+  user_agent: string;
+  remote_addr: string;
+  remember_device: boolean;
+  created_at: string;
+  last_seen_at: string;
+  expires_at: string;
+  current: boolean;
+};
+
+export type SecuritySettings = {
+  auth_enabled: boolean;
+  lan_enabled: boolean;
+  bind_host: string;
+  allowed_origins: string[];
+  session_idle_minutes: number;
+  remembered_device_days: number;
+  failed_login_limit: number;
+};
+
+export type SystemCapabilities = {
+  access_mode: "local" | "lan";
+  request_context: {
+    is_loopback: boolean;
+    is_host_capable: boolean;
+  };
+  capabilities: {
+    browser_playback: boolean;
+    open_vlc_on_host: boolean;
+    reveal_file_on_host: boolean;
+    settings_admin: boolean;
+    file_mutations: boolean;
+  };
+  warnings: string[];
+};
+
 export const emptyConfig: AppConfig = {
   server: {
-    host: "127.0.0.1",
+    host: "localhost",
     port: 5000,
   },
   paths: {

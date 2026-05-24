@@ -3,6 +3,7 @@ import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import { Card } from "../../components/ui/card";
 import type { MoveJob } from "../../types";
+import { formatMoveStage, formatMoveStatus } from "./job-format";
 
 export function MoveJobNotification(props: {
   job: MoveJob;
@@ -155,42 +156,4 @@ function DetailStat(props: { label: string; value: string }) {
       <div className="mt-1 text-sm font-semibold">{props.value}</div>
     </div>
   );
-}
-
-export function formatMoveStage(stage: string) {
-  switch (stage) {
-    case "queued":
-      return "Queued";
-    case "validating":
-      return "Validating source";
-    case "preparing":
-      return "Preparing destination";
-    case "transferring":
-      return "Transferring file";
-    case "finalizing":
-      return "Updating library record";
-    case "completed":
-      return "Completed";
-    case "failed":
-      return "Failed";
-    default:
-      return stage || "Pending";
-  }
-}
-
-export function formatMoveStatus(status: string) {
-  switch (status) {
-    case "moved":
-      return "Moved";
-    case "already_managed":
-      return "Already Moved";
-    case "running":
-      return "Running";
-    case "failed":
-      return "Failed";
-    case "pending":
-      return "Pending";
-    default:
-      return status;
-  }
 }

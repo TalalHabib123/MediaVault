@@ -1,37 +1,12 @@
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
-  createContext,
-  useContext,
-  useEffect,
-  useMemo,
-  useState,
-  type ReactNode,
-} from "react";
-
-export type ThemeMode = "light" | "dark" | "system";
-export type ResolvedTheme = "light" | "dark";
-
-type ThemeContextValue = {
-  theme: ThemeMode;
-  resolvedTheme: ResolvedTheme;
-  setTheme: (nextTheme: ThemeMode) => void;
-};
-
-const THEME_STORAGE_KEY = "mediavault-theme";
-
-const ThemeContext = createContext<ThemeContextValue | null>(null);
-
-function getSystemTheme(): ResolvedTheme {
-  if (typeof window === "undefined") return "dark";
-  return window.matchMedia("(prefers-color-scheme: dark)").matches
-    ? "dark"
-    : "light";
-}
-
-function applyTheme(theme: ResolvedTheme) {
-  const root = document.documentElement;
-  root.dataset.theme = theme;
-  root.style.colorScheme = theme;
-}
+  applyTheme,
+  getSystemTheme,
+  ThemeContext,
+  THEME_STORAGE_KEY,
+  type ResolvedTheme,
+  type ThemeMode,
+} from "./theme-context";
 
 export function ThemeProvider(props: { children: ReactNode }) {
   const [theme, setThemeState] = useState<ThemeMode>(() => {
@@ -39,7 +14,7 @@ export function ThemeProvider(props: { children: ReactNode }) {
     const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
     return stored === "light" || stored === "dark" || stored === "system"
       ? stored
-      : "system";
+      : "dark";
   });
   const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>(() =>
     getSystemTheme(),
@@ -74,16 +49,8 @@ export function ThemeProvider(props: { children: ReactNode }) {
   );
 
   return (
-    <ThemeContext.Provider value={value}>{props.children}</ThemeContext.Provider>
+    <ThemeContext.Provider value={value}>
+      {props.children}
+    </ThemeContext.Provider>
   );
 }
-
-export function useTheme() {
-  const context = useContext(ThemeContext);
-  if (!context) {
-    throw new Error("useTheme must be used within ThemeProvider");
-  }
-  return context;
-}
-
-export { THEME_STORAGE_KEY };

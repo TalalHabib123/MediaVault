@@ -1,0 +1,34 @@
+﻿{
+    "server":  {
+                   "host":  "localhost",
+                   "port":  5000
+               },
+    "paths":  {
+                  "sources":  [
+                                  "C:\\Users\\talal\\Videos\\Chernobyl.COMPLETE.Season.1.S01.1080p.AMZN.WEB-DL.x265-HETeam",
+                                  "C:\\Games"
+                              ],
+                  "library_root":  "E:\\home",
+                  "views_root":  "",
+                  "preview_cache":  "./data/previews"
+              },
+    "tools":  {
+                  "ffmpeg":  "./bin/ffmpeg.exe",
+                  "ffprobe":  "./bin/ffprobe.exe",
+                  "vlc":  "C:\\Program Files\\VideoLAN\\VLC\\vlc.exe"
+              },
+    "mode":  {
+                 "portable":  true
+             },
+    "security":  {
+                     "auth_enabled":  true,
+                     "lan_enabled":  false,
+                     "bind_host":  "localhost",
+                     "allowed_origins":  [
+
+                                         ],
+                     "session_idle_minutes":  720,
+                     "remembered_device_days":  30,
+                     "failed_login_limit":  5
+                 }
+}

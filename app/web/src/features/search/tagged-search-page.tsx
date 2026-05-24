@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { apiFetch } from "../../lib/api";
 import type { MetadataOptions, SearchTaggedResponse } from "../../types";
@@ -36,6 +36,13 @@ export function TaggedSearchPage({
   const mainCategoryIds = parseCSVNumbers(searchParams.get("search_main_cats"));
   const subCategoryIds = parseCSVNumbers(searchParams.get("search_sub_cats"));
   const tagIds = parseCSVNumbers(searchParams.get("search_tags"));
+  const mediaTypesKey = mediaTypes.join(",");
+  const companyIdsKey = companyIds.join(",");
+  const personIdsKey = personIds.join(",");
+  const seriesIdsKey = seriesIds.join(",");
+  const mainCategoryIdsKey = mainCategoryIds.join(",");
+  const subCategoryIdsKey = subCategoryIds.join(",");
+  const tagIdsKey = tagIds.join(",");
 
   const [data, setData] = useState<SearchTaggedResponse>({
     items: [],
@@ -58,39 +65,13 @@ export function TaggedSearchPage({
     );
   }, [options.categories, mainCategoryIds]);
 
-  useEffect(() => {
-    const validIds = new Set(visibleSubCategories.map((item) => item.id));
-    const filtered = subCategoryIds.filter((id) => validIds.has(id));
-
-    if (filtered.length !== subCategoryIds.length) {
-      updateParams((params) => {
-        setCSVNumbers(params, "search_sub_cats", filtered);
-      });
-    }
-  }, [subCategoryIds, visibleSubCategories]);
-
-  useEffect(() => {
-    void load();
-  }, [
-    companyIds.join(","),
-    mainCategoryIds.join(","),
-    mediaTypes.join(","),
-    page,
-    personIds.join(","),
-    query,
-    seriesIds.join(","),
-    sortDir,
-    subCategoryIds.join(","),
-    tagIds.join(","),
-  ]);
-
-  function updateParams(mutator: (params: URLSearchParams) => void) {
+  const updateParams = useCallback((mutator: (params: URLSearchParams) => void) => {
     const next = new URLSearchParams(searchParams);
     mutator(next);
     setSearchParams(next, { replace: true });
-  }
+  }, [searchParams, setSearchParams]);
 
-  async function load() {
+  const load = useCallback(async () => {
     try {
       setLoading(true);
       setError("");
@@ -101,17 +82,17 @@ export function TaggedSearchPage({
       params.set("sort_dir", sortDir);
 
       if (query.trim()) params.set("q", query.trim());
-      if (mediaTypes.length > 0) params.set("media_types", mediaTypes.join(","));
-      if (companyIds.length > 0) params.set("company_ids", companyIds.join(","));
-      if (personIds.length > 0) params.set("person_ids", personIds.join(","));
-      if (seriesIds.length > 0) params.set("series_ids", seriesIds.join(","));
-      if (mainCategoryIds.length > 0) {
-        params.set("main_category_ids", mainCategoryIds.join(","));
+      if (mediaTypesKey) params.set("media_types", mediaTypesKey);
+      if (companyIdsKey) params.set("company_ids", companyIdsKey);
+      if (personIdsKey) params.set("person_ids", personIdsKey);
+      if (seriesIdsKey) params.set("series_ids", seriesIdsKey);
+      if (mainCategoryIdsKey) {
+        params.set("main_category_ids", mainCategoryIdsKey);
       }
-      if (subCategoryIds.length > 0) {
-        params.set("sub_category_ids", subCategoryIds.join(","));
+      if (subCategoryIdsKey) {
+        params.set("sub_category_ids", subCategoryIdsKey);
       }
-      if (tagIds.length > 0) params.set("tag_ids", tagIds.join(","));
+      if (tagIdsKey) params.set("tag_ids", tagIdsKey);
 
       const response = await apiFetch<SearchTaggedResponse>(
         `/api/search/tagged?${params.toString()}`,
@@ -140,7 +121,33 @@ export function TaggedSearchPage({
     } finally {
       setLoading(false);
     }
-  }
+  }, [
+    companyIdsKey,
+    mainCategoryIdsKey,
+    mediaTypesKey,
+    page,
+    personIdsKey,
+    query,
+    seriesIdsKey,
+    sortDir,
+    subCategoryIdsKey,
+    tagIdsKey,
+  ]);
+
+  useEffect(() => {
+    const validIds = new Set(visibleSubCategories.map((item) => item.id));
+    const filtered = subCategoryIds.filter((id) => validIds.has(id));
+
+    if (filtered.length !== subCategoryIds.length) {
+      updateParams((params) => {
+        setCSVNumbers(params, "search_sub_cats", filtered);
+      });
+    }
+  }, [subCategoryIds, updateParams, visibleSubCategories]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
 
   function updateSearchText(value: string) {
     updateParams((params) => {

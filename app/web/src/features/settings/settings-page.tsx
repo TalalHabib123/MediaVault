@@ -1,5 +1,7 @@
 import type { Dispatch, SetStateAction } from "react";
 import type { AppConfig } from "../../types";
+import { Alert } from "../../components/ui/alert";
+import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import { Card, CardContent, CardHeader } from "../../components/ui/card";
 import { Input } from "../../components/ui/input";
@@ -18,10 +20,29 @@ type Props = {
 export function SettingsPage(props: Props) {
   return (
     <div className="grid gap-6">
-      <Card className="p-6">
+      <section className="media-hero compact">
+        <div className="relative z-10">
+          <h2 className="text-4xl font-bold text-(--text-primary)">
+            Settings that keep the vault predictable
+          </h2>
+          <p className="mt-3 max-w-2xl text-sm leading-6 text-(--text-secondary)">
+            Configure local source paths, managed library roots, preview cache,
+            and playback tools. Dangerous file behavior stays explicit and
+            host-bound.
+          </p>
+          <div className="mt-5 flex flex-wrap gap-2">
+            <Badge variant={props.config.mode.portable ? "info" : "default"}>
+              {props.config.mode.portable ? "Portable mode" : "Installed mode"}
+            </Badge>
+            <Badge variant="success">Local-first</Badge>
+          </div>
+        </div>
+      </section>
+
+      <Card className="p-5">
         <CardHeader
-          title="Source Directories"
-          description="These folders are scanned recursively for supported video files."
+          title="Library Sources"
+          description="These folders are scanned recursively. MediaVault stores references instead of duplicating source files."
         />
         <CardContent>
           <div className="flex flex-col gap-3 md:flex-row">
@@ -43,9 +64,10 @@ export function SettingsPage(props: Props) {
               props.config.paths.sources.map((src, index) => (
                 <div
                   key={`${src}-${index}`}
-                  className="surface-muted flex items-center justify-between gap-3 rounded-2xl px-4 py-3"
+                  className="source-row"
+                  title={src}
                 >
-                  <span className="break-all text-sm">{src}</span>
+                  <span>{src}</span>
                   <Button
                     variant="ghost"
                     size="sm"
@@ -60,12 +82,11 @@ export function SettingsPage(props: Props) {
         </CardContent>
       </Card>
 
-      <Card className="p-6">
-        <CardHeader
-          title="Path Configuration"
-          description="Update the local roots used for managed files, views, and previews."
-        />
-        <CardContent className="grid gap-4">
+      <section className="grid gap-6 xl:grid-cols-2">
+        <SettingsPanel
+          title="Managed Library"
+          description="Destination roots for organized media and generated views."
+        >
           <SettingsField
             label="Library Root"
             value={props.config.paths.library_root}
@@ -86,8 +107,14 @@ export function SettingsPage(props: Props) {
               }))
             }
           />
+        </SettingsPanel>
+
+        <SettingsPanel
+          title="Preview Cache"
+          description="Generated thumbnails and hover previews are stored here."
+        >
           <SettingsField
-            label="Preview Cache"
+            label="Preview Cache Path"
             value={props.config.paths.preview_cache}
             onChange={(value) =>
               props.setConfig((prev) => ({
@@ -96,15 +123,36 @@ export function SettingsPage(props: Props) {
               }))
             }
           />
-        </CardContent>
-      </Card>
+          <Alert tone="info">
+            Preview rebuilds are available from Scanner and Library. Cache
+            clearing can be added once the backend exposes a dedicated endpoint.
+          </Alert>
+        </SettingsPanel>
 
-      <Card className="p-6">
-        <CardHeader
-          title="External Tools"
-          description="Point MediaVault to the binaries it uses during scanning, previews, and playback."
-        />
-        <CardContent className="grid gap-4">
+        <SettingsPanel
+          title="Playback"
+          description="Browser playback streams through MediaVault. VLC opens only on the host machine."
+        >
+          <SettingsField
+            label="VLC Path (vlc.exe)"
+            value={props.config.tools.vlc}
+            onChange={(value) =>
+              props.setConfig((prev) => ({
+                ...prev,
+                tools: { ...prev.tools, vlc: value },
+              }))
+            }
+          />
+          <Alert tone="warning">
+            Remote LAN clients should use browser playback. Host VLC launch is
+            intentionally not treated as a remote capability.
+          </Alert>
+        </SettingsPanel>
+
+        <SettingsPanel
+          title="Media Tools"
+          description="FFmpeg and FFprobe power metadata extraction and preview generation."
+        >
           <SettingsField
             label="FFmpeg Path"
             value={props.config.tools.ffmpeg}
@@ -125,30 +173,35 @@ export function SettingsPage(props: Props) {
               }))
             }
           />
-          <SettingsField
-            label="VLC Path (vlc.exe)"
-            value={props.config.tools.vlc}
-            onChange={(value) =>
-              props.setConfig((prev) => ({
-                ...prev,
-                tools: { ...prev.tools, vlc: value },
-              }))
-            }
-          />
-        </CardContent>
-      </Card>
+        </SettingsPanel>
+      </section>
 
-      <div className="flex justify-end">
-        <Button
-          variant="primary"
-          size="lg"
-          onClick={props.onSave}
-          disabled={props.saving}
-        >
-          {props.saving ? "Saving..." : "Save Settings"}
-        </Button>
+      <div className="sticky bottom-4 z-10 flex justify-end">
+        <div className="surface-card p-2">
+          <Button
+            variant="primary"
+            size="lg"
+            onClick={props.onSave}
+            disabled={props.saving}
+          >
+            {props.saving ? "Saving..." : "Save Settings"}
+          </Button>
+        </div>
       </div>
     </div>
+  );
+}
+
+function SettingsPanel(props: {
+  title: string;
+  description: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <Card className="p-5">
+      <CardHeader title={props.title} description={props.description} />
+      <CardContent className="grid gap-4">{props.children}</CardContent>
+    </Card>
   );
 }
 
@@ -159,9 +212,7 @@ function SettingsField(props: {
 }) {
   return (
     <label className="grid gap-2">
-      <span className="text-xs uppercase tracking-[0.24em] text-(--text-muted)">
-        {props.label}
-      </span>
+      <span className="field-caption">{props.label}</span>
       <Input
         value={props.value}
         onChange={(event) => props.onChange(event.target.value)}

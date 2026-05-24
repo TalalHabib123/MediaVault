@@ -1,43 +1,29 @@
 # MediaVault Component Architecture
 
 ## Layers
-- `src/app/providers`
-  - app-wide contexts like theme
-- `src/app/layout`
-  - shell, sidebar, header, dock, and structural wrappers
-- `src/components/ui`
-  - reusable primitives patterned after shadcn usage
-- `src/features/*`
-  - domain-specific views and notification modules
-- `src/components`
-  - existing domain components kept during migration or shared cross-feature pieces
-- `src/pages`
-  - route-specific pages that are not yet migrated into `features`
 
-## Ownership Rules
-- Keep API and business workflow orchestration in feature hooks or feature containers
-- Keep purely visual primitives in `components/ui`
-- Do not place large page sections back into `App.tsx`
-- Use layout wrappers for shared spacing, headers, and cards instead of repeating large class strings
+- `src/app/providers`: app-wide context such as theme.
+- `src/app/layout`: persistent shell, sidebar, top bar, and notification dock.
+- `src/components/ui`: small reusable primitives for buttons, cards, inputs, selects, badges, and alerts.
+- `src/features/*`: domain screens, feature components, and workflow state.
+- `src/lib`: shared utilities and API wrapper.
 
-## Primitive Guidance
-- Use UI primitives for:
-  - buttons
-  - cards
-  - inputs
-  - selects
-  - badges
-  - alerts
-- Keep custom domain components for:
-  - library cards
-  - search result cards
-  - move/preview progress cards
-  - metadata assignment controls
+## Feature Ownership
 
-## Migration Rule
-- When moving code out of a legacy file, preserve types and behavior first.
-- After logic is stable in the new location, apply visual redesign.
+- `features/dashboard`: route container, dashboard shell orchestration, and shared controller hook.
+- `features/library`: library grid/table cards, media detail drawer, bulk tagging drawer, and media formatting helpers.
+- `features/scanner`: source scan and preview job operations.
+- `features/bulk`: selected item review and bulk action entry point.
+- `features/search`: tagged search and result cards.
+- `features/metadata`: catalog option creation.
+- `features/settings`: local paths, preview cache, playback, and tool configuration.
+- `features/player`: focused browser playback route.
+- `features/auth`: setup, login, sessions, LAN/security settings.
 
-## App Shell Rule
-- `App.tsx` should remain routing-only.
-- Dashboard state and effects belong in feature hooks or dashboard feature containers.
+## Rules
+
+- `App.tsx` stays a routing export only.
+- Dashboard state and API orchestration stay in `useDashboardController`.
+- Domain UI belongs in feature folders, not in legacy root-level wrappers.
+- Add new primitives only when multiple features share behavior.
+- Do not reintroduce `src/pages` or large one-off components in `src/components`.

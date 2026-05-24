@@ -1,3 +1,9 @@
+param(
+    [ValidateSet("", "local", "lan")]
+    [string]$AccessMode = "",
+    [switch]$ResetAuth
+)
+
 $ErrorActionPreference = "Stop"
 
 function Require-Path {
@@ -9,6 +15,64 @@ function Require-Path {
     if (-not (Test-Path $Path)) {
         throw $Message
     }
+}
+
+function Read-AccessMode {
+    param(
+        [string]$CurrentMode
+    )
+
+    if ($CurrentMode) {
+        return $CurrentMode
+    }
+
+    Write-Host ""
+    Write-Host "Select MediaVault access mode:"
+    Write-Host "  1) Local only (localhost)"
+    Write-Host "  2) LAN mode (0.0.0.0, requires owner setup)"
+    $answer = Read-Host "Mode [1]"
+    if ($answer -eq "2" -or $answer.Trim().ToLowerInvariant() -eq "lan") {
+        return "lan"
+    }
+    return "local"
+}
+
+function Get-LanIpCandidates {
+    $addresses = @()
+    try {
+        $addresses = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop |
+            Where-Object {
+                $_.IPAddress -notlike "127.*" -and
+                $_.IPAddress -notlike "169.254.*" -and
+                $_.PrefixOrigin -ne "WellKnown"
+            } |
+            Select-Object -ExpandProperty IPAddress -Unique
+    } catch {
+        $addresses = @()
+    }
+
+    return @($addresses)
+}
+
+function Sync-EmbeddedWebDist {
+    param(
+        [string]$WebPath,
+        [string]$EmbedPath
+    )
+
+    Write-Host "Building embedded frontend snapshot for http://localhost:5000..."
+    Push-Location $WebPath
+    try {
+        npm run build
+    } finally {
+        Pop-Location
+    }
+
+    if (Test-Path $EmbedPath) {
+        Remove-Item $EmbedPath -Recurse -Force
+    }
+    New-Item -ItemType Directory -Path $EmbedPath | Out-Null
+    Copy-Item (Join-Path $WebPath "dist\*") $EmbedPath -Recurse -Force
 }
 
 function Get-DescendantProcessIds {
@@ -103,6 +167,7 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = (Resolve-Path (Join-Path $scriptDir "..")).Path
 $appDir = Join-Path $repoRoot "app"
 $webDir = Join-Path $appDir "web"
+$embedDistDir = Join-Path $appDir "internal\webui\dist"
 
 $goModPath = Join-Path $appDir "go.mod"
 $packageJson = Join-Path $webDir "package.json"
@@ -116,6 +181,8 @@ $script:debounceWindow = [TimeSpan]::FromMilliseconds(500)
 $script:watchers = @()
 $script:subscriptions = @()
 $script:backendExitNoticeShown = $false
+$script:accessMode = Read-AccessMode -CurrentMode $AccessMode
+$script:resetAuthPending = [bool]$ResetAuth
 
 Require-Path $appDir "Missing app folder: $appDir"
 Require-Path $webDir "Missing web folder: $webDir"
@@ -144,13 +211,21 @@ function Start-BackendProcess {
     Stop-BackendProcess
 
     Write-Host ""
-    Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Starting backend server..."
+    Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Starting backend server ($script:accessMode mode)..."
+    $env:MEDIAVAULT_ACCESS_MODE = $script:accessMode
+    if ($script:resetAuthPending) {
+        $env:MEDIAVAULT_AUTH_RESET = "1"
+        $script:resetAuthPending = $false
+    } else {
+        Remove-Item Env:\MEDIAVAULT_AUTH_RESET -ErrorAction SilentlyContinue
+    }
     $script:backendProcess = Start-Process `
         -FilePath "go" `
         -ArgumentList @("run", "./cmd/server") `
         -WorkingDirectory $appDir `
         -NoNewWindow `
         -PassThru
+    Remove-Item Env:\MEDIAVAULT_AUTH_RESET -ErrorAction SilentlyContinue
     $script:lastRestartAt = Get-Date
     $script:backendExitNoticeShown = $false
 }
@@ -158,13 +233,22 @@ function Start-BackendProcess {
 function Start-FrontendProcess {
     Stop-FrontendProcess
 
-    Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Starting frontend dev server..."
+    $webHost = "localhost"
+    if ($script:accessMode -eq "lan") {
+        $webHost = "0.0.0.0"
+    }
+
+    Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Starting frontend dev server ($webHost)..."
+    $env:MEDIAVAULT_WEB_HOST = $webHost
+    $env:MEDIAVAULT_API_TARGET = "http://localhost:5000"
     $script:frontendProcess = Start-Process `
         -FilePath "npm.cmd" `
         -ArgumentList @("run", "dev") `
         -WorkingDirectory $webDir `
         -NoNewWindow `
         -PassThru
+    Remove-Item Env:\MEDIAVAULT_WEB_HOST -ErrorAction SilentlyContinue
+    Remove-Item Env:\MEDIAVAULT_API_TARGET -ErrorAction SilentlyContinue
 }
 
 function Request-BackendRestart {
@@ -237,6 +321,8 @@ try {
         }
     }
 
+    Sync-EmbeddedWebDist -WebPath $webDir -EmbedPath $embedDistDir
+
     Add-BackendWatcher -Path $appDir -Filter "*.go" -IncludeSubdirectories $true
     Add-BackendWatcher -Path $appDir -Filter "go.mod" -IncludeSubdirectories $false
 
@@ -249,6 +335,15 @@ try {
 
     Write-Host ""
     Write-Host "MediaVault dev mode is running in this window."
+    Write-Host "Local UI: http://localhost:5173"
+    Write-Host "Embedded UI/API: http://localhost:5000"
+    if ($script:accessMode -eq "lan") {
+        $lanIps = Get-LanIpCandidates
+        foreach ($lanIp in $lanIps) {
+            Write-Host "LAN UI: http://$($lanIp):5173"
+            Write-Host "LAN embedded UI/API: http://$($lanIp):5000"
+        }
+    }
     Write-Host "Backend changes restart automatically. Press Ctrl+C to stop everything."
 
     while ($true) {

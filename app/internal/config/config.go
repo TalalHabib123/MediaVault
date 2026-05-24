@@ -28,6 +28,16 @@ type AppConfig struct {
 	Mode struct {
 		Portable bool `json:"portable"`
 	} `json:"mode"`
+
+	Security struct {
+		AuthEnabled          bool     `json:"auth_enabled"`
+		LANEnabled           bool     `json:"lan_enabled"`
+		BindHost             string   `json:"bind_host"`
+		AllowedOrigins       []string `json:"allowed_origins"`
+		SessionIdleMinutes   int      `json:"session_idle_minutes"`
+		RememberedDeviceDays int      `json:"remembered_device_days"`
+		FailedLoginLimit     int      `json:"failed_login_limit"`
+	} `json:"security"`
 }
 
 type Service struct {
@@ -90,7 +100,7 @@ func (s *Service) Load() (*AppConfig, error) {
 	}
 
 	if cfg.Server.Host == "" {
-		cfg.Server.Host = "127.0.0.1"
+		cfg.Server.Host = "localhost"
 	}
 	if cfg.Server.Port == 0 {
 		cfg.Server.Port = 8090
@@ -104,6 +114,7 @@ func (s *Service) Load() (*AppConfig, error) {
 	if cfg.Tools.FFprobe == "" {
 		cfg.Tools.FFprobe = "./bin/ffprobe.exe"
 	}
+	fillSecurityDefaults(&cfg)
 
 	return &cfg, nil
 }
@@ -123,7 +134,7 @@ func (s *Service) Save(cfg *AppConfig) error {
 
 func DefaultConfig() *AppConfig {
 	var cfg AppConfig
-	cfg.Server.Host = "127.0.0.1"
+	cfg.Server.Host = "localhost"
 	cfg.Server.Port = 8090
 
 	cfg.Paths.Sources = []string{}
@@ -136,6 +147,29 @@ func DefaultConfig() *AppConfig {
 	cfg.Tools.VLC = ""
 
 	cfg.Mode.Portable = true
+	fillSecurityDefaults(&cfg)
 
 	return &cfg
+}
+
+func fillSecurityDefaults(cfg *AppConfig) {
+	cfg.Security.AuthEnabled = true
+	if cfg.Security.BindHost == "" {
+		cfg.Security.BindHost = cfg.Server.Host
+	}
+	if cfg.Security.BindHost == "" {
+		cfg.Security.BindHost = "localhost"
+	}
+	if cfg.Security.SessionIdleMinutes == 0 {
+		cfg.Security.SessionIdleMinutes = 12 * 60
+	}
+	if cfg.Security.RememberedDeviceDays == 0 {
+		cfg.Security.RememberedDeviceDays = 30
+	}
+	if cfg.Security.FailedLoginLimit == 0 {
+		cfg.Security.FailedLoginLimit = 5
+	}
+	if cfg.Security.AllowedOrigins == nil {
+		cfg.Security.AllowedOrigins = []string{}
+	}
 }

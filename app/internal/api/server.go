@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"mediavault/internal/auth"
 	"mediavault/internal/config"
 	"mediavault/internal/library"
 	"mediavault/internal/media/deletion"
@@ -25,6 +26,9 @@ import (
 
 type Server struct {
 	ConfigService *config.Service
+	AuthService   *auth.Service
+	AccessMode    string
+	BindHost      string
 	LibraryRepo   *library.Repository
 	MetadataRepo  *metadata.Repository
 	Scanner       *scanner.Service
@@ -35,11 +39,327 @@ type Server struct {
 }
 
 func NewRouter(s *Server) http.Handler {
+	if s.AccessMode == "" {
+		s.AccessMode = "local"
+	}
+	if s.BindHost == "" {
+		s.BindHost = "localhost"
+	}
+
 	r := chi.NewRouter()
+	r.Use(auth.Gate{Service: s.AuthService, ConfigService: s.ConfigService}.Middleware)
 
 	r.Get("/api/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok": true,
+		})
+	})
+
+	r.Get("/api/auth/status", func(w http.ResponseWriter, r *http.Request) {
+		hasUser, err := s.AuthService.Repository().HasAnyUser()
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to read auth status"})
+			return
+		}
+
+		var user any
+		authenticated := false
+		if hasUser {
+			principal, _, err := s.AuthService.ValidateRequest(r)
+			if err == nil {
+				authenticated = true
+				user = map[string]any{
+					"id":       principal.UserID,
+					"username": principal.Username,
+					"role":     principal.Role,
+				}
+			}
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"setup_required": !hasUser,
+			"authenticated":  authenticated,
+			"user":           user,
+			"lan_enabled":    s.AccessMode == "lan",
+		})
+	})
+
+	r.Post("/api/auth/setup", func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Username       string `json:"username"`
+			Password       string `json:"password"`
+			RememberDevice bool   `json:"remember_device"`
+			DeviceLabel    string `json:"device_label"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json body"})
+			return
+		}
+
+		result, err := s.AuthService.Setup(auth.SetupInput{
+			Username:       payload.Username,
+			Password:       payload.Password,
+			RememberDevice: payload.RememberDevice,
+			DeviceLabel:    payload.DeviceLabel,
+		}, r)
+		if err != nil {
+			status := http.StatusBadRequest
+			if errors.Is(err, auth.ErrSetupAlreadyComplete) {
+				status = http.StatusConflict
+			}
+			writeJSON(w, status, map[string]any{"error": err.Error()})
+			return
+		}
+
+		auth.SetSessionCookie(w, r, result)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok": true,
+			"user": map[string]any{
+				"id":       result.User.ID,
+				"username": result.User.Username,
+				"role":     result.User.Role,
+			},
+		})
+	})
+
+	r.Post("/api/auth/login", func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Username       string `json:"username"`
+			Password       string `json:"password"`
+			RememberDevice bool   `json:"remember_device"`
+			DeviceLabel    string `json:"device_label"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json body"})
+			return
+		}
+
+		result, err := s.AuthService.Login(auth.LoginInput{
+			Username:       payload.Username,
+			Password:       payload.Password,
+			RememberDevice: payload.RememberDevice,
+			DeviceLabel:    payload.DeviceLabel,
+		}, r)
+		if err != nil {
+			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": err.Error()})
+			return
+		}
+
+		auth.SetSessionCookie(w, r, result)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok": true,
+			"user": map[string]any{
+				"id":       result.User.ID,
+				"username": result.User.Username,
+				"role":     result.User.Role,
+			},
+		})
+	})
+
+	r.Post("/api/auth/logout", func(w http.ResponseWriter, r *http.Request) {
+		s.AuthService.Logout(r)
+		auth.ClearSessionCookie(w, r)
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	})
+
+	r.Get("/api/auth/me", func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := auth.PrincipalFromContext(r.Context())
+		if !ok {
+			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "authentication required"})
+			return
+		}
+		session, _ := auth.SessionFromContext(r.Context())
+		writeJSON(w, http.StatusOK, map[string]any{
+			"user": map[string]any{
+				"id":       principal.UserID,
+				"username": principal.Username,
+				"role":     principal.Role,
+			},
+			"session": map[string]any{
+				"id":              session.ID,
+				"device_label":    session.DeviceLabel,
+				"remember_device": session.RememberDevice,
+				"created_at":      session.CreatedAt,
+				"last_seen_at":    session.LastSeenAt,
+				"expires_at":      session.ExpiresAt,
+			},
+		})
+	})
+
+	r.Get("/api/auth/csrf", func(w http.ResponseWriter, r *http.Request) {
+		session, ok := auth.SessionFromContext(r.Context())
+		if !ok {
+			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "authentication required"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"csrf_token": s.AuthService.CSRFToken(session),
+		})
+	})
+
+	r.Get("/api/auth/sessions", func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := auth.PrincipalFromContext(r.Context())
+		if !ok {
+			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "authentication required"})
+			return
+		}
+		current, _ := auth.SessionFromContext(r.Context())
+		sessions, err := s.AuthService.Repository().ListSessions(principal.UserID)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to list sessions"})
+			return
+		}
+		out := make([]auth.SessionSummary, 0, len(sessions))
+		for _, session := range sessions {
+			out = append(out, auth.SessionSummary{
+				ID:             session.ID,
+				DeviceLabel:    session.DeviceLabel,
+				UserAgent:      session.UserAgent,
+				RemoteAddr:     session.RemoteAddr,
+				RememberDevice: session.RememberDevice,
+				CreatedAt:      session.CreatedAt,
+				LastSeenAt:     session.LastSeenAt,
+				ExpiresAt:      session.ExpiresAt,
+				Current:        session.ID == current.ID,
+			})
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"sessions": out})
+	})
+
+	r.Delete("/api/auth/sessions/{id}", func(w http.ResponseWriter, r *http.Request) {
+		id, ok := parseIDParam(chi.URLParam(r, "id"))
+		if !ok {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid session id"})
+			return
+		}
+		if err := s.AuthService.Repository().RevokeSession(id); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to revoke session"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	})
+
+	r.Post("/api/auth/change-password", func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := auth.PrincipalFromContext(r.Context())
+		if !ok {
+			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "authentication required"})
+			return
+		}
+		session, _ := auth.SessionFromContext(r.Context())
+		var payload struct {
+			CurrentPassword     string `json:"current_password"`
+			NewPassword         string `json:"new_password"`
+			RevokeOtherSessions bool   `json:"revoke_other_sessions"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json body"})
+			return
+		}
+		if err := s.AuthService.ChangePassword(principal.UserID, payload.CurrentPassword, payload.NewPassword, session.ID, payload.RevokeOtherSessions); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	})
+
+	r.Get("/api/system/capabilities", func(w http.ResponseWriter, r *http.Request) {
+		principal, _ := auth.PrincipalFromContext(r.Context())
+		cfg, err := s.ConfigService.Load()
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to load settings"})
+			return
+		}
+		isLoopback := auth.IsLoopbackRequest(r)
+		isOwner := principal.Role == "owner"
+		vlcPath := strings.TrimSpace(cfg.Tools.VLC)
+		vlcOK := false
+		if vlcPath != "" {
+			if _, err := os.Stat(s.ConfigService.ResolvePath(vlcPath)); err == nil {
+				vlcOK = true
+			}
+		}
+		warnings := []string{}
+		if s.AccessMode == "lan" {
+			warnings = append(warnings, "LAN mode is for trusted networks only and is not designed for direct internet exposure.")
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"access_mode": s.AccessMode,
+			"request_context": map[string]any{
+				"is_loopback":     isLoopback,
+				"is_host_capable": isLoopback,
+			},
+			"capabilities": map[string]any{
+				"browser_playback":    true,
+				"open_vlc_on_host":    isOwner && isLoopback && vlcOK,
+				"reveal_file_on_host": isOwner && isLoopback,
+				"settings_admin":      isOwner,
+				"file_mutations":      isOwner,
+			},
+			"warnings": warnings,
+		})
+	})
+
+	r.Get("/api/settings/security", func(w http.ResponseWriter, r *http.Request) {
+		cfg, err := s.ConfigService.Load()
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to load settings"})
+			return
+		}
+		cfg.Security.LANEnabled = s.AccessMode == "lan"
+		cfg.Security.BindHost = s.BindHost
+		writeJSON(w, http.StatusOK, cfg.Security)
+	})
+
+	r.Put("/api/settings/security", func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			AuthEnabled          bool     `json:"auth_enabled"`
+			LANEnabled           bool     `json:"lan_enabled"`
+			BindHost             string   `json:"bind_host"`
+			AllowedOrigins       []string `json:"allowed_origins"`
+			SessionIdleMinutes   int      `json:"session_idle_minutes"`
+			RememberedDeviceDays int      `json:"remembered_device_days"`
+			FailedLoginLimit     int      `json:"failed_login_limit"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json body"})
+			return
+		}
+		hasUser, err := s.AuthService.Repository().HasAnyUser()
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to read auth status"})
+			return
+		}
+		if payload.LANEnabled && !hasUser {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "LAN mode cannot be enabled before owner setup"})
+			return
+		}
+		cfg, err := s.ConfigService.Load()
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to load settings"})
+			return
+		}
+		cfg.Security.AuthEnabled = true
+		cfg.Security.LANEnabled = payload.LANEnabled
+		cfg.Security.BindHost = strings.TrimSpace(payload.BindHost)
+		if cfg.Security.BindHost == "" {
+			if payload.LANEnabled {
+				cfg.Security.BindHost = "0.0.0.0"
+			} else {
+				cfg.Security.BindHost = "localhost"
+			}
+		}
+		cfg.Security.AllowedOrigins = payload.AllowedOrigins
+		cfg.Security.SessionIdleMinutes = payload.SessionIdleMinutes
+		cfg.Security.RememberedDeviceDays = payload.RememberedDeviceDays
+		cfg.Security.FailedLoginLimit = payload.FailedLoginLimit
+		if err := s.ConfigService.Save(cfg); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to save security settings"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":               true,
+			"security":         cfg.Security,
+			"restart_required": s.BindHost != cfg.Security.BindHost,
 		})
 	})
 
@@ -51,6 +371,9 @@ func NewRouter(s *Server) http.Handler {
 			})
 			return
 		}
+		cfg.Server.Host = s.BindHost
+		cfg.Security.LANEnabled = s.AccessMode == "lan"
+		cfg.Security.BindHost = s.BindHost
 		writeJSON(w, http.StatusOK, cfg)
 	})
 
@@ -64,7 +387,7 @@ func NewRouter(s *Server) http.Handler {
 		}
 
 		if strings.TrimSpace(payload.Server.Host) == "" {
-			payload.Server.Host = "127.0.0.1"
+			payload.Server.Host = "localhost"
 		}
 		if payload.Server.Port == 0 {
 			payload.Server.Port = 8090
@@ -605,6 +928,13 @@ func NewRouter(s *Server) http.Handler {
 	})
 
 	r.Post("/api/library/{id}/open-vlc", func(w http.ResponseWriter, r *http.Request) {
+		if !auth.IsLoopbackRequest(r) {
+			writeJSON(w, http.StatusForbidden, map[string]any{
+				"error": "VLC launch is only available from the host PC.",
+			})
+			return
+		}
+
 		id, ok := parseIDParam(chi.URLParam(r, "id"))
 		if !ok {
 			writeJSON(w, http.StatusBadRequest, map[string]any{
@@ -634,6 +964,13 @@ func NewRouter(s *Server) http.Handler {
 	})
 
 	r.Post("/api/library/{id}/reveal-file", func(w http.ResponseWriter, r *http.Request) {
+		if !auth.IsLoopbackRequest(r) {
+			writeJSON(w, http.StatusForbidden, map[string]any{
+				"error": "Reveal in folder is only available from the host PC.",
+			})
+			return
+		}
+
 		id, ok := parseIDParam(chi.URLParam(r, "id"))
 		if !ok {
 			writeJSON(w, http.StatusBadRequest, map[string]any{

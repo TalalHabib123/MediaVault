@@ -5,6 +5,7 @@ import {
   useSearchParams,
 } from "react-router-dom";
 import { apiFetch } from "../../lib/api";
+import { getSystemCapabilities } from "../auth/auth-api";
 import type { BulkTaggingPayload } from "../../types";
 import type {
   AppConfig,
@@ -26,16 +27,18 @@ import type {
   PreviewRegenerateTarget,
   ScanSummary,
   Series,
+  SystemCapabilities,
   Tag,
   UpdateMediaPayload,
   UpdateTaggingPayload,
 } from "../../types";
 import { emptyConfig } from "../../types";
 import {
+  getLibraryMediaTypeForTab,
   parseDashboardTab,
   type TabKey,
 } from "./dashboard-tabs";
-import { formatPreviewJobTitle } from "../notifications/preview-job-notification";
+import { formatPreviewJobTitle } from "../notifications/job-format";
 
 const emptyOptions: MetadataOptions = {
   companies: [],
@@ -67,6 +70,8 @@ export function useDashboardController() {
   const activeTab = parseDashboardTab(searchParams.get("tab"));
   const librarySearch = searchParams.get("lib_q") ?? "";
   const mediaTypeFilter = searchParams.get("lib_type") ?? "all";
+  const tabMediaTypeFilter = getLibraryMediaTypeForTab(activeTab);
+  const effectiveMediaTypeFilter = tabMediaTypeFilter ?? mediaTypeFilter;
   const taggedStatusFilter = searchParams.get("lib_tagged") ?? "all";
 
   const [config, setConfig] = useState<AppConfig>(emptyConfig);
@@ -109,9 +114,12 @@ export function useDashboardController() {
   const [bulkTagSaving, setBulkTagSaving] = useState(false);
   const [bulkMoving, setBulkMoving] = useState(false);
   const [toolActionBusy, setToolActionBusy] = useState(false);
+  const [capabilities, setCapabilities] = useState<SystemCapabilities | null>(
+    null,
+  );
 
   useEffect(() => {
-    void Promise.all([loadSettings(), loadMetadataOptions()]);
+    void Promise.all([loadSettings(), loadMetadataOptions(), loadCapabilities()]);
   }, []);
 
   useEffect(() => {
@@ -123,7 +131,7 @@ export function useDashboardController() {
     if (!configLoading) {
       void loadLibrary();
     }
-  }, [configLoading, mediaTypeFilter, taggedStatusFilter]);
+  }, [activeTab, configLoading, effectiveMediaTypeFilter, taggedStatusFilter]);
 
   useEffect(() => {
     setSelectedIds((prev) =>
@@ -444,6 +452,15 @@ export function useDashboardController() {
     }
   }
 
+  async function loadCapabilities() {
+    try {
+      const data = await getSystemCapabilities();
+      setCapabilities(data);
+    } catch {
+      setCapabilities(null);
+    }
+  }
+
   async function loadMetadataOptions() {
     try {
       setOptionsLoading(true);
@@ -496,7 +513,9 @@ export function useDashboardController() {
 
       const params = new URLSearchParams();
       params.set("limit", "200");
-      if (mediaTypeFilter !== "all") params.set("media_type", mediaTypeFilter);
+      if (effectiveMediaTypeFilter !== "all") {
+        params.set("media_type", effectiveMediaTypeFilter);
+      }
       if (taggedStatusFilter !== "all") {
         params.set("tagged_status", taggedStatusFilter);
       }
@@ -851,6 +870,7 @@ export function useDashboardController() {
     activeTab,
     librarySearch,
     mediaTypeFilter,
+    effectiveMediaTypeFilter,
     taggedStatusFilter,
     config,
     setConfig,
@@ -886,6 +906,7 @@ export function useDashboardController() {
     bulkTagSaving,
     bulkMoving,
     toolActionBusy,
+    capabilities,
     visibleItems,
     setActiveTab,
     setLibrarySearch,
