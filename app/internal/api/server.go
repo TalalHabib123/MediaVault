@@ -4,10 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"mime"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -18,6 +16,7 @@ import (
 	"mediavault/internal/library"
 	"mediavault/internal/media/deletion"
 	"mediavault/internal/media/organizer"
+	"mediavault/internal/media/playback"
 	"mediavault/internal/media/previews"
 	"mediavault/internal/media/scanner"
 	"mediavault/internal/metadata"
@@ -33,6 +32,7 @@ type Server struct {
 	MetadataRepo  *metadata.Repository
 	Scanner       *scanner.Service
 	Organizer     *organizer.Service
+	Playback      *playback.Service
 	Previewer     *previews.Service
 	Deletion      *deletion.Service
 	Actions       *actions.Service
@@ -44,6 +44,9 @@ func NewRouter(s *Server) http.Handler {
 	}
 	if s.BindHost == "" {
 		s.BindHost = "localhost"
+	}
+	if s.Playback == nil {
+		s.Playback = playback.NewService(s.ConfigService)
 	}
 
 	r := chi.NewRouter()
@@ -1041,24 +1044,13 @@ func NewRouter(s *Server) http.Handler {
 			return
 		}
 
-		file, err := os.Open(path)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusNotFound)
-			return
+		if err := s.Playback.Serve(w, r, item, path); err != nil {
+			status := http.StatusInternalServerError
+			if os.IsNotExist(err) {
+				status = http.StatusNotFound
+			}
+			http.Error(w, err.Error(), status)
 		}
-		defer file.Close()
-
-		info, err := file.Stat()
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		if contentType := mime.TypeByExtension(filepath.Ext(path)); contentType != "" {
-			w.Header().Set("Content-Type", contentType)
-		}
-
-		http.ServeContent(w, r, filepath.Base(path), info.ModTime(), file)
 	})
 
 	r.Get("/api/metadata/options", func(w http.ResponseWriter, r *http.Request) {

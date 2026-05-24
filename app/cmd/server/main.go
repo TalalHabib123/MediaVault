@@ -16,6 +16,7 @@ import (
 	"mediavault/internal/library"
 	"mediavault/internal/media/deletion"
 	"mediavault/internal/media/organizer"
+	"mediavault/internal/media/playback"
 	"mediavault/internal/media/previews"
 	"mediavault/internal/media/scanner"
 	"mediavault/internal/metadata"
@@ -64,6 +65,7 @@ func main() {
 
 	scanService := scanner.NewService(cfgService, libraryRepo)
 	organizerService := organizer.NewService(cfgService, libraryRepo)
+	playbackService := playback.NewService(cfgService)
 	previewService := previews.NewService(cfgService, libraryRepo)
 	deletionService := deletion.NewService(cfgService, libraryRepo, previewService)
 	actionsService := actions.NewService(cfgService)
@@ -77,6 +79,7 @@ func main() {
 		MetadataRepo:  metadataRepo,
 		Scanner:       scanService,
 		Organizer:     organizerService,
+		Playback:      playbackService,
 		Previewer:     previewService,
 		Deletion:      deletionService,
 		Actions:       actionsService,
