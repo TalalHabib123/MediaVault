@@ -192,6 +192,17 @@ export type PlayerContextResponse = {
   item: MediaItem;
   prev_episode_id: number | null;
   next_episode_id: number | null;
+  playback: PlaybackStatus;
+};
+
+export type PlaybackStatus = {
+  status: "ready" | "preparing" | "error" | string;
+  mode: "direct" | "mp4" | "hls" | string;
+  stream_url: string;
+  hls_manifest_url: string;
+  seekable: boolean;
+  duration_seconds: number;
+  message: string;
 };
 
 export type BulkTaggingPayload = {

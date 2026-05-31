@@ -5,7 +5,7 @@ import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import { Card } from "../../components/ui/card";
 import { apiFetch } from "../../lib/api";
-import type { PlayerContextResponse } from "../../types";
+import type { PlaybackStatus, PlayerContextResponse } from "../../types";
 import {
   formatDuration,
   formatMediaTypeLong,
@@ -17,8 +17,10 @@ export function PlayerPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const prewarmedForRef = useRef<number | null>(null);
 
   const [data, setData] = useState<PlayerContextResponse | null>(null);
+  const [playback, setPlayback] = useState<PlaybackStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [vlcBusy, setVlcBusy] = useState(false);
@@ -29,10 +31,13 @@ export function PlayerPage() {
     try {
       setLoading(true);
       setError("");
+      setData(null);
+      setPlayback(null);
       const response = await apiFetch<PlayerContextResponse>(
         `/api/library/${id}/player-context`,
       );
       setData(response);
+      setPlayback(response.playback);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load player");
     } finally {
@@ -63,7 +68,8 @@ export function PlayerPage() {
       }
 
       if (event.key === "ArrowRight") {
-        video.currentTime = Math.min(video.currentTime + 10, video.duration || 0);
+        const duration = Number.isFinite(video.duration) ? video.duration : 0;
+        video.currentTime = Math.min(video.currentTime + 10, duration);
       }
 
       if (event.key === "Escape") {
@@ -74,6 +80,105 @@ export function PlayerPage() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [navigate, returnTo]);
+
+  useEffect(() => {
+    if (!data || !playback || playback.status !== "preparing") return;
+
+    const mediaID = data.item.id;
+    let canceled = false;
+    let timer: number | undefined;
+
+    async function pollPlayback() {
+      try {
+        const next = await apiFetch<PlaybackStatus>(
+          `/api/library/${mediaID}/playback/status?mode=auto`,
+        );
+        if (canceled) return;
+        setPlayback(next);
+        if (next.status === "preparing") {
+          timer = window.setTimeout(pollPlayback, 2000);
+        }
+      } catch (err) {
+        if (!canceled) {
+          setError(
+            err instanceof Error
+              ? err.message
+              : "Failed to prepare playback",
+          );
+        }
+      }
+    }
+
+    timer = window.setTimeout(pollPlayback, 1200);
+    return () => {
+      canceled = true;
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [data, playback]);
+
+  useEffect(() => {
+    if (!data || playback?.status !== "ready") return;
+    if (prewarmedForRef.current === data.item.id) return;
+    prewarmedForRef.current = data.item.id;
+
+    const adjacentIDs = [data.prev_episode_id, data.next_episode_id].filter(
+      (value): value is number => typeof value === "number" && value > 0,
+    );
+    for (const adjacentID of adjacentIDs) {
+      void apiFetch<PlaybackStatus>(
+        `/api/library/${adjacentID}/playback/status?mode=auto`,
+      ).catch(() => {});
+    }
+  }, [data, playback?.status]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || playback?.status !== "ready" || playback.mode !== "hls") {
+      return;
+    }
+
+    const manifestURL = playback.hls_manifest_url;
+    if (!manifestURL) return;
+
+    let canceled = false;
+    let hls: import("hls.js").default | null = null;
+
+    if (video.canPlayType("application/vnd.apple.mpegurl")) {
+      video.src = manifestURL;
+      return () => {
+        video.removeAttribute("src");
+        video.load();
+      };
+    }
+
+    void import("hls.js")
+      .then(({ default: Hls }) => {
+        if (canceled) return;
+        if (!Hls.isSupported()) {
+          setError("This browser cannot play the prepared HLS stream.");
+          return;
+        }
+        hls = new Hls({
+          maxBufferLength: 30,
+          maxMaxBufferLength: 120,
+          backBufferLength: 30,
+        });
+        hls.loadSource(manifestURL);
+        hls.attachMedia(video);
+      })
+      .catch((err) => {
+        if (!canceled) {
+          setError(
+            err instanceof Error ? err.message : "Failed to load HLS player",
+          );
+        }
+      });
+
+    return () => {
+      canceled = true;
+      hls?.destroy();
+    };
+  }, [playback?.hls_manifest_url, playback?.mode, playback?.status]);
 
   function goBackToSourcePage() {
     navigate(returnTo);
@@ -123,6 +228,9 @@ export function PlayerPage() {
   }
 
   const item = data.item;
+  const playbackReady = playback?.status === "ready";
+  const videoSource =
+    playbackReady && playback?.mode !== "hls" ? playback.stream_url : undefined;
 
   return (
     <div className="player-page">
@@ -197,15 +305,30 @@ export function PlayerPage() {
       ) : null}
 
       <main className="player-stage">
-        <video
-          ref={videoRef}
-          key={item.id}
-          src={`/api/library/${item.id}/stream`}
-          controls
-          autoPlay
-          preload="metadata"
-          className="h-full w-full object-contain"
-        />
+        {playbackReady ? (
+          <video
+            ref={videoRef}
+            key={`${item.id}-${playback.mode}-${videoSource ?? playback.hls_manifest_url}`}
+            src={videoSource}
+            controls
+            autoPlay
+            preload="auto"
+            className="h-full w-full object-contain"
+          />
+        ) : (
+          <div className="player-preparing" role="status">
+            <div className="brand-mark">MV</div>
+            <h2>
+              {playback?.status === "error"
+                ? "Playback preparation failed"
+                : "Preparing playback"}
+            </h2>
+            <p>
+              {playback?.message ||
+                "Creating a seekable stream for this video."}
+            </p>
+          </div>
+        )}
       </main>
     </div>
   );

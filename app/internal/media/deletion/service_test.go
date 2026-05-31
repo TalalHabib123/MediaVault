@@ -95,8 +95,11 @@ func (h *testHarness) createPreviewArtifacts(t *testing.T, mediaID int64) {
 	cacheRoot := h.cfgService.ResolvePath(cfg.Paths.PreviewCache)
 	thumbFile := filepath.Join(cacheRoot, "thumbs", fileNameForID(mediaID, ".jpg"))
 	hoverFile := filepath.Join(cacheRoot, "hover", fileNameForID(mediaID, ".mp4"))
+	playbackFile := filepath.Join(cacheRoot, "playback", "mp4", fileNameForID(mediaID, ".mp4"))
+	hlsManifest := filepath.Join(cacheRoot, "playback", "hls", fmt.Sprintf("%d", mediaID), "master.m3u8")
+	hlsSegment := filepath.Join(cacheRoot, "playback", "hls", fmt.Sprintf("%d", mediaID), "360p_00000.ts")
 
-	for _, path := range []string{thumbFile, hoverFile} {
+	for _, path := range []string{thumbFile, hoverFile, playbackFile, hlsManifest, hlsSegment} {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			t.Fatalf("mkdir preview dir: %v", err)
 		}
@@ -177,6 +180,8 @@ func TestDeleteDeleteFileRemovesFileDBRelationsAndPreviewCache(t *testing.T) {
 	for _, path := range []string{
 		filepath.Join(cacheRoot, "thumbs", fileNameForID(mediaID, ".jpg")),
 		filepath.Join(cacheRoot, "hover", fileNameForID(mediaID, ".mp4")),
+		filepath.Join(cacheRoot, "playback", "mp4", fileNameForID(mediaID, ".mp4")),
+		filepath.Join(cacheRoot, "playback", "hls", fmt.Sprintf("%d", mediaID)),
 	} {
 		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("expected preview artifact to be removed, path=%s err=%v", path, err)

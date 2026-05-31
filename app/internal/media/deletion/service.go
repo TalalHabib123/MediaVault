@@ -1,7 +1,6 @@
 package deletion
 
 import (
-	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -145,10 +144,13 @@ func (s *Service) cleanupPreviewCache(mediaID int64) bool {
 	paths := []string{
 		filepath.Join(cacheRoot, "thumbs", fmt.Sprintf("%d.jpg", mediaID)),
 		filepath.Join(cacheRoot, "hover", fmt.Sprintf("%d.mp4", mediaID)),
+		filepath.Join(cacheRoot, "playback", "mp4", fmt.Sprintf("%d.mp4", mediaID)),
+		filepath.Join(cacheRoot, "playback", "mp4", fmt.Sprintf("%d.mp4.partial", mediaID)),
+		filepath.Join(cacheRoot, "playback", "hls", fmt.Sprintf("%d", mediaID)),
 	}
 
 	for _, path := range paths {
-		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := os.RemoveAll(path); err != nil {
 			return false
 		}
 	}

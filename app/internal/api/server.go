@@ -923,10 +923,20 @@ func NewRouter(s *Server) http.Handler {
 			return
 		}
 
+		path := s.Previewer.ResolveMediaPath(item)
+		playbackStatus, err := s.Playback.Status(item, path, playback.ModeAuto, !auth.IsLoopbackRequest(r), true)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{
+				"error": err.Error(),
+			})
+			return
+		}
+
 		writeJSON(w, http.StatusOK, map[string]any{
 			"item":            item,
 			"prev_episode_id": prevID,
 			"next_episode_id": nextID,
+			"playback":        playbackStatus,
 		})
 	})
 
@@ -1048,6 +1058,66 @@ func NewRouter(s *Server) http.Handler {
 		http.ServeFile(w, r, clipPath)
 	})
 
+	r.Get("/api/library/{id}/playback/status", func(w http.ResponseWriter, r *http.Request) {
+		id, ok := parseIDParam(chi.URLParam(r, "id"))
+		if !ok {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"error": "invalid media id",
+			})
+			return
+		}
+
+		item, err := s.LibraryRepo.GetByID(id)
+		if err != nil {
+			writeJSON(w, http.StatusNotFound, map[string]any{
+				"error": err.Error(),
+			})
+			return
+		}
+
+		path := s.Previewer.ResolveMediaPath(item)
+		status, err := s.Playback.Status(item, path, r.URL.Query().Get("mode"), !auth.IsLoopbackRequest(r), true)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{
+				"error": err.Error(),
+			})
+			return
+		}
+
+		writeJSON(w, http.StatusOK, status)
+	})
+
+	r.Get("/api/library/{id}/playback/hls/*", func(w http.ResponseWriter, r *http.Request) {
+		id, ok := parseIDParam(chi.URLParam(r, "id"))
+		if !ok {
+			http.Error(w, "invalid media id", http.StatusBadRequest)
+			return
+		}
+
+		item, err := s.LibraryRepo.GetByID(id)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+
+		path := s.Previewer.ResolveMediaPath(item)
+		if strings.TrimSpace(path) == "" {
+			http.Error(w, "media path is empty", http.StatusBadRequest)
+			return
+		}
+
+		if err := s.Playback.ServeHLS(w, r, item, path, chi.URLParam(r, "*")); err != nil {
+			status := http.StatusInternalServerError
+			var notReady *playback.NotReadyError
+			if errors.As(err, &notReady) {
+				status = http.StatusTooEarly
+			} else if os.IsNotExist(err) {
+				status = http.StatusNotFound
+			}
+			http.Error(w, err.Error(), status)
+		}
+	})
+
 	r.Get("/api/library/{id}/stream", func(w http.ResponseWriter, r *http.Request) {
 		id, ok := parseIDParam(chi.URLParam(r, "id"))
 		if !ok {
@@ -1069,7 +1139,10 @@ func NewRouter(s *Server) http.Handler {
 
 		if err := s.Playback.Serve(w, r, item, path); err != nil {
 			status := http.StatusInternalServerError
-			if os.IsNotExist(err) {
+			var notReady *playback.NotReadyError
+			if errors.As(err, &notReady) {
+				status = http.StatusTooEarly
+			} else if os.IsNotExist(err) {
 				status = http.StatusNotFound
 			}
 			http.Error(w, err.Error(), status)
