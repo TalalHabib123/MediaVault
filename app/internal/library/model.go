@@ -29,6 +29,7 @@ type MediaItem struct {
 
 	IsTagged bool `db:"is_tagged" json:"is_tagged"`
 
+	MissingAt string `db:"missing_at" json:"missing_at"`
 	CreatedAt string `db:"created_at" json:"created_at"`
 	UpdatedAt string `db:"updated_at" json:"updated_at"`
 }

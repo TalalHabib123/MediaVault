@@ -4,9 +4,11 @@ import (
 	"bufio"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"mediavault/internal/api"
@@ -64,6 +66,7 @@ func main() {
 	}
 
 	scanService := scanner.NewService(cfgService, libraryRepo)
+	reconcileService := library.NewReconcileService(libraryRepo)
 	organizerService := organizer.NewService(cfgService, libraryRepo)
 	playbackService := playback.NewService(cfgService)
 	previewService := previews.NewService(cfgService, libraryRepo)
@@ -78,6 +81,7 @@ func main() {
 		LibraryRepo:   libraryRepo,
 		MetadataRepo:  metadataRepo,
 		Scanner:       scanService,
+		Reconciler:    reconcileService,
 		Organizer:     organizerService,
 		Playback:      playbackService,
 		Previewer:     previewService,
@@ -90,11 +94,31 @@ func main() {
 		log.Fatalf("failed to create embedded web handler: %v", err)
 	}
 
-	addr := cfg.Server.Host + ":" + itoa(cfg.Server.Port)
+	port := itoa(cfg.Server.Port)
+	addr := cfg.Server.Host + ":" + port
 
-	log.Printf("MediaVault server listening on http://%s", addr)
+	logStartupURLs(accessMode, cfg.Server.Host, port)
 	if err := http.ListenAndServe(addr, handler); err != nil {
 		log.Fatalf("server stopped: %v", err)
+	}
+}
+
+func logStartupURLs(accessMode, bindHost, port string) {
+	log.Printf("MediaVault server listening on %s:%s", bindHost, port)
+	log.Printf("Local URL: http://localhost:%s", port)
+
+	if accessMode != "lan" {
+		return
+	}
+
+	lanIPs := lanIPCandidates()
+	if len(lanIPs) == 0 {
+		log.Printf("LAN URL: no LAN IPv4 address detected; run ipconfig and use this PC's IPv4 address")
+		return
+	}
+
+	for _, lanIP := range lanIPs {
+		log.Printf("LAN URL: http://%s:%s", lanIP, port)
 	}
 }
 
@@ -127,6 +151,7 @@ func applyStartupAccessMode(cfg *config.AppConfig, authRepo *auth.Repository) (s
 	case "lan":
 		if !hasUser {
 			log.Printf("LAN mode requested, but owner setup is not complete; binding to localhost until setup is finished")
+			log.Printf("Finish owner setup at http://localhost:%d, then restart MediaVault and select LAN mode again", cfg.Server.Port)
 			cfg.Server.Host = "localhost"
 			cfg.Security.LANEnabled = false
 			cfg.Security.BindHost = "localhost"
@@ -145,6 +170,54 @@ func applyStartupAccessMode(cfg *config.AppConfig, authRepo *auth.Repository) (s
 	}
 
 	return mode, nil
+}
+
+func lanIPCandidates() []string {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return []string{}
+	}
+
+	seen := map[string]bool{}
+	addresses := []string{}
+
+	for _, iface := range interfaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+
+		for _, addr := range addrs {
+			var ip net.IP
+			switch value := addr.(type) {
+			case *net.IPNet:
+				ip = value.IP
+			case *net.IPAddr:
+				ip = value.IP
+			default:
+				continue
+			}
+
+			ipv4 := ip.To4()
+			if ipv4 == nil || ipv4.IsLoopback() || ipv4.IsLinkLocalUnicast() || ipv4.IsUnspecified() {
+				continue
+			}
+
+			text := ipv4.String()
+			if seen[text] {
+				continue
+			}
+			seen[text] = true
+			addresses = append(addresses, text)
+		}
+	}
+
+	sort.Strings(addresses)
+	return addresses
 }
 
 func isInteractiveTerminal() bool {

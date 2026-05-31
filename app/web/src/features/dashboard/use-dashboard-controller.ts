@@ -14,6 +14,7 @@ import type {
   DeleteMediaPayload,
   DeleteMediaResponse,
   LibraryResponse,
+  LibraryReconcileSummary,
   MediaDetailResponse,
   MediaItem,
   MetadataOptions,
@@ -97,6 +98,7 @@ export function useDashboardController() {
   const [dismissedMoveJobId, setDismissedMoveJobId] = useState<string | null>(
     () => readStoredString(DISMISSED_MOVE_JOB_STORAGE_KEY),
   );
+  const initialLibraryRefreshRef = useRef(false);
   const completedPreviewJobRef = useRef<string | null>(null);
   const completedMoveJobRef = useRef<string | null>(null);
   const [selectedDetail, setSelectedDetail] =
@@ -129,6 +131,12 @@ export function useDashboardController() {
 
   useEffect(() => {
     if (!configLoading) {
+      if (!initialLibraryRefreshRef.current) {
+        initialLibraryRefreshRef.current = true;
+        void refreshLibrary({ silent: true });
+        return;
+      }
+
       void loadLibrary();
     }
   }, [activeTab, configLoading, effectiveMediaTypeFilter, taggedStatusFilter]);
@@ -506,7 +514,7 @@ export function useDashboardController() {
     }
   }
 
-  async function loadLibrary() {
+  async function loadLibrary(): Promise<MediaItem[]> {
     try {
       setLibraryLoading(true);
       setError("");
@@ -523,14 +531,82 @@ export function useDashboardController() {
       const data = await apiFetch<LibraryResponse>(
         `/api/library?${params.toString()}`,
       );
-      setLibrary(Array.isArray(data?.items) ? data.items : []);
+      const items = Array.isArray(data?.items) ? data.items : [];
+      setLibrary(items);
       setLibraryTotal(typeof data?.total === "number" ? data.total : 0);
+      return items;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load library");
       setLibrary([]);
       setLibraryTotal(0);
+      return [];
     } finally {
       setLibraryLoading(false);
+    }
+  }
+
+  async function reconcileLibrary(): Promise<LibraryReconcileSummary> {
+    const data = await apiFetch<LibraryReconcileSummary>(
+      "/api/library/reconcile",
+      {
+        method: "POST",
+      },
+    );
+
+    return normalizeReconcileSummary(data);
+  }
+
+  async function refreshLibrary(options: { silent?: boolean } = {}) {
+    const detailID = selectedDetail?.item.id ?? null;
+    const detailWasVisible = detailID
+      ? library.some((item) => item.id === detailID)
+      : false;
+
+    try {
+      if (!options.silent) {
+        setMessage("");
+      }
+      setError("");
+
+      const reconcile = await reconcileLibrary();
+      const nextItems = await loadLibrary();
+      closeDetailIfHidden(detailID, detailWasVisible, nextItems);
+
+      if (options.silent) {
+        return;
+      }
+
+      if (reconcile.errors.length > 0) {
+        setError(
+          `Library refreshed with ${reconcile.errors.length} reconciliation issue(s).`,
+        );
+      }
+
+      const notice = formatReconcileNotice(reconcile);
+      setMessage(notice || "Library refreshed. No missing files found.");
+    } catch (err) {
+      const nextItems = await loadLibrary();
+      closeDetailIfHidden(detailID, detailWasVisible, nextItems);
+
+      if (!options.silent) {
+        setError(
+          err instanceof Error ? err.message : "Failed to refresh library",
+        );
+      }
+    }
+  }
+
+  function closeDetailIfHidden(
+    detailID: number | null,
+    wasVisible: boolean,
+    nextItems: MediaItem[],
+  ) {
+    if (!detailID || !wasVisible) {
+      return;
+    }
+
+    if (!nextItems.some((item) => item.id === detailID)) {
+      setSelectedDetail(null);
     }
   }
 
@@ -602,6 +678,9 @@ export function useDashboardController() {
       const data = await apiFetch<ScanSummary>("/api/scan/run", {
         method: "POST",
       });
+      const reconcileSummary = data?.reconcile
+        ? normalizeReconcileSummary(data.reconcile)
+        : null;
 
       setScanSummary({
         sources: typeof data?.sources === "number" ? data.sources : 0,
@@ -610,17 +689,31 @@ export function useDashboardController() {
         updated: typeof data?.updated === "number" ? data.updated : 0,
         skipped: typeof data?.skipped === "number" ? data.skipped : 0,
         errors: Array.isArray(data?.errors) ? data.errors : [],
+        reconcile: reconcileSummary,
         preview_job: data?.preview_job ?? null,
       });
 
       setPreviewJob(data?.preview_job ?? null);
       setDismissedPreviewJobId(null);
+      const reconcileNotice = reconcileSummary
+        ? formatReconcileNotice(reconcileSummary)
+        : "";
       setMessage(
         data?.preview_job
-          ? "Scan completed. Preview generation started in the background."
-          : "Scan completed.",
+          ? [
+              "Scan completed. Preview generation started in the background.",
+              reconcileNotice,
+            ]
+              .filter(Boolean)
+              .join(" ")
+          : ["Scan completed.", reconcileNotice].filter(Boolean).join(" "),
       );
-      await loadLibrary();
+      const detailID = selectedDetail?.item.id ?? null;
+      const detailWasVisible = detailID
+        ? library.some((item) => item.id === detailID)
+        : false;
+      const nextItems = await loadLibrary();
+      closeDetailIfHidden(detailID, detailWasVisible, nextItems);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Scan failed");
     } finally {
@@ -920,6 +1013,7 @@ export function useDashboardController() {
     openSelectedInVLC,
     revealSelectedFile,
     loadLibrary,
+    refreshLibrary,
     startPreviewRegeneration,
     runScan,
     openItem,
@@ -958,6 +1052,31 @@ function sortCategories(items: Category[]) {
 
 function sortSeries(items: Series[]) {
   return [...items].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function normalizeReconcileSummary(
+  value: Partial<LibraryReconcileSummary> | null | undefined,
+): LibraryReconcileSummary {
+  return {
+    checked: typeof value?.checked === "number" ? value.checked : 0,
+    marked_missing:
+      typeof value?.marked_missing === "number" ? value.marked_missing : 0,
+    restored: typeof value?.restored === "number" ? value.restored : 0,
+    errors: Array.isArray(value?.errors) ? value.errors : [],
+  };
+}
+
+function formatReconcileNotice(summary: LibraryReconcileSummary) {
+  const parts: string[] = [];
+
+  if (summary.marked_missing > 0) {
+    parts.push(`Hid ${summary.marked_missing} missing item(s).`);
+  }
+  if (summary.restored > 0) {
+    parts.push(`Restored ${summary.restored} item(s).`);
+  }
+
+  return parts.join(" ");
 }
 
 function readStoredString(key: string) {

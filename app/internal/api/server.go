@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"strconv"
@@ -31,6 +32,7 @@ type Server struct {
 	LibraryRepo   *library.Repository
 	MetadataRepo  *metadata.Repository
 	Scanner       *scanner.Service
+	Reconciler    *library.ReconcileService
 	Organizer     *organizer.Service
 	Playback      *playback.Service
 	Previewer     *previews.Service
@@ -47,6 +49,9 @@ func NewRouter(s *Server) http.Handler {
 	}
 	if s.Playback == nil {
 		s.Playback = playback.NewService(s.ConfigService)
+	}
+	if s.Reconciler == nil && s.LibraryRepo != nil {
+		s.Reconciler = library.NewReconcileService(s.LibraryRepo)
 	}
 
 	r := chi.NewRouter()
@@ -431,6 +436,11 @@ func NewRouter(s *Server) http.Handler {
 			summary.Errors = []string{}
 		}
 
+		reconcileSummary, err := s.Reconciler.Reconcile(context.Background())
+		if err != nil {
+			summary.Errors = append(summary.Errors, fmt.Sprintf("library reconciliation failed: %v", err))
+		}
+
 		previewJob := s.Previewer.StartWarmup(summary.ProcessedMediaIDs)
 
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -440,6 +450,7 @@ func NewRouter(s *Server) http.Handler {
 			"updated":     summary.Updated,
 			"skipped":     summary.Skipped,
 			"errors":      summary.Errors,
+			"reconcile":   reconcileSummary,
 			"preview_job": previewJob,
 		})
 	})
@@ -535,6 +546,18 @@ func NewRouter(s *Server) http.Handler {
 			"offset":        offset,
 			"tagged_status": taggedStatus,
 		})
+	})
+
+	r.Post("/api/library/reconcile", func(w http.ResponseWriter, r *http.Request) {
+		summary, err := s.Reconciler.Reconcile(context.Background())
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{
+				"error": err.Error(),
+			})
+			return
+		}
+
+		writeJSON(w, http.StatusOK, summary)
 	})
 
 	r.Post("/api/library/bulk/tagging", func(w http.ResponseWriter, r *http.Request) {

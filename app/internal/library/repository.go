@@ -58,6 +58,7 @@ func (r *Repository) Upsert(item *MediaItem) (int64, string, error) {
 		type_source,
 		title_source,
 		sequence_source,
+		missing_at,
 		created_at,
 		updated_at
 	) VALUES (
@@ -78,6 +79,7 @@ func (r *Repository) Upsert(item *MediaItem) (int64, string, error) {
 		:type_source,
 		:title_source,
 		:sequence_source,
+		:missing_at,
 		:created_at,
 		:updated_at
 	)
@@ -119,6 +121,7 @@ func (r *Repository) Upsert(item *MediaItem) (int64, string, error) {
 			WHEN media_items.sequence_source = 'manual' THEN media_items.sequence_source
 			ELSE excluded.sequence_source
 		END,
+		missing_at = '',
 		updated_at = excluded.updated_at
 	`
 
@@ -160,7 +163,7 @@ func (r *Repository) List(q string, mediaType string, taggedStatus string, limit
 		END
 	`
 
-	whereParts := []string{"1 = 1"}
+	whereParts := []string{"media_items.missing_at = ''"}
 	args := []any{}
 
 	if strings.TrimSpace(q) != "" {
@@ -219,6 +222,7 @@ func (r *Repository) List(q string, mediaType string, taggedStatus string, limit
 		media_items.series_id,
 		COALESCE(series.name, '') AS series_name,
 		` + taggedExpr + ` AS is_tagged,
+		media_items.missing_at,
 		media_items.created_at,
 		media_items.updated_at
 	FROM media_items
@@ -237,6 +241,67 @@ func (r *Repository) List(q string, mediaType string, taggedStatus string, limit
 	}
 
 	return items, total, nil
+}
+
+func (r *Repository) ListForReconciliation() ([]MediaItem, error) {
+	items := []MediaItem{}
+	err := r.db.Select(&items, `
+		SELECT
+			id,
+			title,
+			source_path,
+			canonical_path,
+			missing_at
+		FROM media_items
+		ORDER BY id ASC
+	`)
+	return items, err
+}
+
+func (r *Repository) MarkMissing(id int64, missingAt string) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	result, err := r.db.Exec(`
+		UPDATE media_items
+		SET missing_at = ?, updated_at = ?
+		WHERE id = ?
+		  AND missing_at = ''
+	`, missingAt, now, id)
+	if err != nil {
+		return err
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return fmt.Errorf("media item not found or already missing")
+	}
+
+	return nil
+}
+
+func (r *Repository) ClearMissing(id int64) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	result, err := r.db.Exec(`
+		UPDATE media_items
+		SET missing_at = '', updated_at = ?
+		WHERE id = ?
+		  AND missing_at != ''
+	`, now, id)
+	if err != nil {
+		return err
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return fmt.Errorf("media item not found or not missing")
+	}
+
+	return nil
 }
 
 func (r *Repository) GetByID(id int64) (*MediaItem, error) {
@@ -277,6 +342,7 @@ func (r *Repository) GetByID(id int64) (*MediaItem, error) {
 		media_items.series_id,
 		COALESCE(series.name, '') AS series_name,
 		` + taggedExpr + ` AS is_tagged,
+		media_items.missing_at,
 		media_items.created_at,
 		media_items.updated_at
 	FROM media_items
@@ -354,6 +420,7 @@ func (r *Repository) UpdateManagedPath(id int64, path string, fileName string) e
 			source_path = ?,
 			canonical_path = ?,
 			file_name = ?,
+			missing_at = '',
 			updated_at = ?
 		WHERE id = ?
 	`, path, path, fileName, now, id)
@@ -425,6 +492,7 @@ func (r *Repository) findAdjacentEpisode(seriesID int64, seasonNumber int, episo
 			SELECT id
 			FROM media_items
 			WHERE series_id = ?
+			  AND missing_at = ''
 			  AND media_type = 'series_episode'
 			  AND (
 				season_number < ?
@@ -439,6 +507,7 @@ func (r *Repository) findAdjacentEpisode(seriesID int64, seasonNumber int, episo
 			SELECT id
 			FROM media_items
 			WHERE series_id = ?
+			  AND missing_at = ''
 			  AND media_type = 'series_episode'
 			  AND (
 				season_number > ?
@@ -510,7 +579,7 @@ func (r *Repository) SearchTagged(params SearchTaggedParams) ([]MediaItem, int, 
 		LEFT JOIN series ON series.id = media_items.series_id
 	`
 
-	whereParts := []string{taggedExpr + ` = 1`}
+	whereParts := []string{taggedExpr + ` = 1`, `media_items.missing_at = ''`}
 	args := []any{}
 
 	if q := strings.TrimSpace(params.Query); q != "" {
@@ -649,6 +718,7 @@ func (r *Repository) SearchTagged(params SearchTaggedParams) ([]MediaItem, int, 
 			media_items.series_id,
 			COALESCE(series.name, '') AS series_name,
 			` + taggedExpr + ` AS is_tagged,
+			media_items.missing_at,
 			media_items.created_at,
 			media_items.updated_at
 	` + joins + `

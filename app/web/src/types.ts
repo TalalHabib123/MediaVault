@@ -45,6 +45,7 @@ export type MediaItem = {
   series_id: number | null;
   series_name: string;
   is_tagged: boolean;
+  missing_at: string;
   created_at: string;
   updated_at: string;
 };
@@ -57,6 +58,13 @@ export type LibraryResponse = {
   tagged_status: string;
 };
 
+export type LibraryReconcileSummary = {
+  checked: number;
+  marked_missing: number;
+  restored: number;
+  errors: string[];
+};
+
 export type ScanSummary = {
   sources: number;
   files_seen: number;
@@ -64,6 +72,7 @@ export type ScanSummary = {
   updated: number;
   skipped: number;
   errors: string[];
+  reconcile?: LibraryReconcileSummary | null;
   preview_job?: PreviewGenerationJob | null;
 };
 

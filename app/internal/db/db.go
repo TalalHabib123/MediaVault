@@ -142,6 +142,7 @@ func createMediaItemsTable(db *sqlx.DB) error {
 		sequence_source TEXT NOT NULL DEFAULT 'auto',
 		company_id INTEGER NULL,
 		series_id INTEGER NULL,
+		missing_at TEXT NOT NULL DEFAULT '',
 		created_at TEXT NOT NULL,
 		updated_at TEXT NOT NULL
 	);
@@ -262,6 +263,7 @@ func migrateMediaItemsTable(db *sqlx.DB) error {
 		{"sequence_source", `ALTER TABLE media_items ADD COLUMN sequence_source TEXT NOT NULL DEFAULT 'auto'`},
 		{"company_id", `ALTER TABLE media_items ADD COLUMN company_id INTEGER NULL`},
 		{"series_id", `ALTER TABLE media_items ADD COLUMN series_id INTEGER NULL`},
+		{"missing_at", `ALTER TABLE media_items ADD COLUMN missing_at TEXT NOT NULL DEFAULT ''`},
 		{"created_at", `ALTER TABLE media_items ADD COLUMN created_at TEXT NOT NULL DEFAULT ''`},
 		{"updated_at", `ALTER TABLE media_items ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''`},
 	}
@@ -292,6 +294,7 @@ func migrateMediaItemsTable(db *sqlx.DB) error {
 			type_source = CASE WHEN type_source IS NULL OR type_source = '' THEN 'auto' ELSE type_source END,
 			title_source = CASE WHEN title_source IS NULL OR title_source = '' THEN 'auto' ELSE title_source END,
 			sequence_source = CASE WHEN sequence_source IS NULL OR sequence_source = '' THEN 'auto' ELSE sequence_source END,
+			missing_at = COALESCE(missing_at, ''),
 			created_at = CASE WHEN created_at IS NULL OR created_at = '' THEN updated_at ELSE created_at END,
 			updated_at = COALESCE(updated_at, '')
 	`)

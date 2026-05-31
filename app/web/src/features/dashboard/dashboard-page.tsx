@@ -139,7 +139,7 @@ export function DashboardPage() {
           search={controller.librarySearch}
           onSearchChange={controller.setLibrarySearch}
           loading={controller.libraryLoading}
-          onRefresh={controller.loadLibrary}
+          onRefresh={() => void controller.refreshLibrary()}
           onScan={controller.runScan}
           scanLoading={controller.scanLoading}
           scanSummary={controller.scanSummary}
@@ -191,7 +191,7 @@ export function DashboardPage() {
           previewJob={controller.previewJob}
           moveJob={controller.moveJob}
           onScan={controller.runScan}
-          onRefresh={controller.loadLibrary}
+          onRefresh={() => void controller.refreshLibrary()}
           onRegenThumbnails={() =>
             void controller.startPreviewRegeneration("thumbnails")
           }
