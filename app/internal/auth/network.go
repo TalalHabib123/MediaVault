@@ -17,5 +17,25 @@ func isLoopbackHost(host string) bool {
 		return true
 	}
 	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
+	return ip != nil && (ip.IsLoopback() || isLocalInterfaceIP(ip))
+}
+
+func isLocalInterfaceIP(ip net.IP) bool {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return false
+	}
+	for _, addr := range addrs {
+		var interfaceIP net.IP
+		switch value := addr.(type) {
+		case *net.IPNet:
+			interfaceIP = value.IP
+		case *net.IPAddr:
+			interfaceIP = value.IP
+		}
+		if interfaceIP != nil && interfaceIP.Equal(ip) {
+			return true
+		}
+	}
+	return false
 }

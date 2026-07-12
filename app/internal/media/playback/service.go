@@ -2,13 +2,17 @@ package playback
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"mime"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -18,67 +22,95 @@ import (
 )
 
 const (
-	ModeAuto   = "auto"
-	ModeDirect = "direct"
-	ModeMP4    = "mp4"
-	ModeHLS    = "hls"
+	ModeDirect    = "direct"
+	ModeSmoothHLS = "smooth_hls"
 
-	StatusReady     = "ready"
-	StatusPreparing = "preparing"
-	StatusError     = "error"
+	QualityAuto     = "auto"
+	QualityOriginal = "original"
+	Quality720p     = "720p"
+	Quality480p     = "480p"
+	Quality360p     = "360p"
+
+	defaultSegmentSeconds = 8.0
+	prefetchSegmentCount  = 2
 )
 
-type PlaybackStatus struct {
-	Status          string  `json:"status"`
+type PlaybackPlan struct {
 	Mode            string  `json:"mode"`
 	StreamURL       string  `json:"stream_url"`
-	HLSManifestURL  string  `json:"hls_manifest_url"`
+	SessionURL      string  `json:"session_url"`
+	ManifestURL     string  `json:"manifest_url"`
 	Seekable        bool    `json:"seekable"`
 	DurationSeconds float64 `json:"duration_seconds"`
+	Quality         string  `json:"quality"`
 	Message         string  `json:"message"`
+}
+
+type SessionInput struct {
+	StartSeconds float64 `json:"start_seconds"`
+	Quality      string  `json:"quality"`
+}
+
+type SessionInfo struct {
+	SessionID    string  `json:"session_id"`
+	ManifestURL  string  `json:"manifest_url"`
+	Quality      string  `json:"quality"`
+	StartSeconds float64 `json:"start_seconds"`
 }
 
 type Service struct {
 	ConfigService *config.Service
 
-	mu        sync.Mutex
-	jobs      map[string]*generationJob
-	generator generatorFunc
+	mu               sync.Mutex
+	sessions         map[string]*Session
+	segmentGenerator segmentGeneratorFunc
 }
 
-type generationJob struct {
-	key     string
-	status  string
-	message string
+type Session struct {
+	ID              string
+	MediaID         int64
+	SourcePath      string
+	FFmpegPath      string
+	Dir             string
+	Quality         string
+	Profile         smoothProfile
+	Item            library.MediaItem
+	DurationSeconds float64
+	SegmentSeconds  float64
+	SegmentCount    int
+	StartedAt       time.Time
+
+	ctx    context.Context
+	cancel context.CancelFunc
+
+	mu   sync.Mutex
+	jobs map[int]*segmentJob
 }
 
-type generatorFunc func(ctx context.Context, item *library.MediaItem, sourcePath string, target playbackTarget) error
-
-type playbackTarget struct {
-	Mode       string
-	OutputPath string
-	Partial    string
-	HLSDir     string
-	PartialDir string
+type segmentJob struct {
+	done chan struct{}
+	err  error
 }
 
-type hlsVariant struct {
-	Name    string
+type smoothProfile struct {
+	Quality string
 	Height  int
 	Bitrate string
-	Peak    int
+	Bufsize string
+	CRF     string
 }
+
+type segmentGeneratorFunc func(ctx context.Context, ffmpegPath string, sourcePath string, outPath string, item library.MediaItem, profile smoothProfile, startSeconds float64, durationSeconds float64) error
 
 func NewService(cfg *config.Service) *Service {
-	s := &Service{
-		ConfigService: cfg,
-		jobs:          map[string]*generationJob{},
+	return &Service{
+		ConfigService:    cfg,
+		sessions:         map[string]*Session{},
+		segmentGenerator: runFFmpegSegment,
 	}
-	s.generator = s.generatePlaybackAsset
-	return s
 }
 
-func (s *Service) Status(item *library.MediaItem, sourcePath string, requestedMode string, remote bool, start bool) (*PlaybackStatus, error) {
+func (s *Service) Plan(item *library.MediaItem, sourcePath string, remote bool) (*PlaybackPlan, error) {
 	sourcePath = strings.TrimSpace(sourcePath)
 	if sourcePath == "" {
 		return nil, fmt.Errorf("media path is empty")
@@ -86,279 +118,448 @@ func (s *Service) Status(item *library.MediaItem, sourcePath string, requestedMo
 	if item == nil {
 		return nil, fmt.Errorf("media item is nil")
 	}
-
-	mode := s.resolveMode(item, sourcePath, requestedMode, remote)
-	if mode == ModeDirect {
-		if _, err := os.Stat(sourcePath); err != nil {
-			return nil, err
-		}
-		return readyStatus(item, ModeDirect), nil
-	}
-
-	target, err := s.targetFor(item, mode)
-	if err != nil {
+	if _, err := os.Stat(sourcePath); err != nil {
 		return nil, err
 	}
-	if fresh, err := isFresh(sourcePath, target.OutputPath); err == nil && fresh {
-		return readyStatus(item, mode), nil
-	}
 
-	key := jobKey(item.ID, mode)
-	if start {
-		job := s.startJob(key, item, sourcePath, target)
-		if job.status == StatusError {
-			return preparingStatus(item, mode, job.status, job.message), nil
-		}
-		return preparingStatus(item, mode, StatusPreparing, "Preparing seekable playback cache."), nil
-	}
-
-	s.mu.Lock()
-	job := s.jobs[key]
-	s.mu.Unlock()
-	if job != nil {
-		return preparingStatus(item, mode, job.status, job.message), nil
-	}
-
-	return preparingStatus(item, mode, StatusPreparing, "Playback cache is not ready yet."), nil
-}
-
-func (s *Service) Serve(w http.ResponseWriter, r *http.Request, item *library.MediaItem, sourcePath string) error {
-	sourcePath = strings.TrimSpace(sourcePath)
-	if sourcePath == "" {
-		return fmt.Errorf("media path is empty")
-	}
-	if item == nil {
-		return fmt.Errorf("media item is nil")
+	plan := &PlaybackPlan{
+		Mode:            ModeSmoothHLS,
+		StreamURL:       fmt.Sprintf("/api/library/%d/stream", item.ID),
+		SessionURL:      fmt.Sprintf("/api/library/%d/playback/session", item.ID),
+		Seekable:        true,
+		DurationSeconds: item.DurationSeconds,
+		Quality:         QualityAuto,
+		Message:         "Smooth playback creates temporary browser-compatible segments only while watching.",
 	}
 
 	if CanServeDirectlyToBrowser(item, sourcePath) {
-		return serveDirect(w, r, sourcePath)
+		plan.Mode = ModeDirect
+		plan.Quality = QualityOriginal
+		if remote {
+			plan.Message = "Original seekable byte-range stream. Switch to Smooth only if remote playback buffers."
+		} else {
+			plan.Message = "Original file can play directly with full duration and seeking."
+		}
 	}
 
-	target, err := s.targetFor(item, ModeMP4)
-	if err != nil {
-		return err
-	}
-	if fresh, err := isFresh(sourcePath, target.OutputPath); err != nil {
-		return err
-	} else if !fresh {
-		return &NotReadyError{Mode: ModeMP4}
-	}
-
-	return serveFile(w, r, target.OutputPath, "video/mp4")
+	return plan, nil
 }
 
-func (s *Service) ServeHLS(w http.ResponseWriter, r *http.Request, item *library.MediaItem, sourcePath string, assetPath string) error {
+func (s *Service) Serve(w http.ResponseWriter, r *http.Request, _ *library.MediaItem, sourcePath string) error {
 	sourcePath = strings.TrimSpace(sourcePath)
 	if sourcePath == "" {
 		return fmt.Errorf("media path is empty")
 	}
+	contentType := mime.TypeByExtension(filepath.Ext(sourcePath))
+	return serveFile(w, r, sourcePath, contentType, "private, max-age=86400")
+}
+
+func (s *Service) StartSession(item *library.MediaItem, sourcePath string, input SessionInput) (*SessionInfo, error) {
+	sourcePath = strings.TrimSpace(sourcePath)
+	if sourcePath == "" {
+		return nil, fmt.Errorf("media path is empty")
+	}
 	if item == nil {
-		return fmt.Errorf("media item is nil")
+		return nil, fmt.Errorf("media item is nil")
+	}
+	if item.DurationSeconds <= 0 {
+		return nil, fmt.Errorf("media duration is unknown; smooth playback needs duration metadata")
+	}
+	if _, err := os.Stat(sourcePath); err != nil {
+		return nil, err
 	}
 
-	target, err := s.targetFor(item, ModeHLS)
-	if err != nil {
-		return err
-	}
-	if fresh, err := isFresh(sourcePath, target.OutputPath); err != nil {
-		return err
-	} else if !fresh {
-		return &NotReadyError{Mode: ModeHLS}
-	}
-
-	cleanAsset, ok := cleanRelativeAssetPath(assetPath)
-	if !ok {
-		return fmt.Errorf("invalid hls asset path")
-	}
-	fullPath := filepath.Join(target.HLSDir, cleanAsset)
-	if rel, err := filepath.Rel(target.HLSDir, fullPath); err != nil || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
-		return fmt.Errorf("invalid hls asset path")
-	}
-
-	contentType := mime.TypeByExtension(filepath.Ext(fullPath))
-	switch strings.ToLower(filepath.Ext(fullPath)) {
-	case ".m3u8":
-		contentType = "application/vnd.apple.mpegurl"
-	case ".ts":
-		contentType = "video/mp2t"
-	}
-
-	return serveFile(w, r, fullPath, contentType)
-}
-
-func (s *Service) resolveMode(item *library.MediaItem, sourcePath string, requestedMode string, remote bool) string {
-	switch strings.ToLower(strings.TrimSpace(requestedMode)) {
-	case ModeHLS:
-		return ModeHLS
-	case ModeMP4:
-		if CanServeDirectlyToBrowser(item, sourcePath) {
-			return ModeDirect
-		}
-		return ModeMP4
-	default:
-		if remote {
-			return ModeHLS
-		}
-		if CanServeDirectlyToBrowser(item, sourcePath) {
-			return ModeDirect
-		}
-		return ModeMP4
-	}
-}
-
-func (s *Service) targetFor(item *library.MediaItem, mode string) (playbackTarget, error) {
 	cfg, err := s.ConfigService.Load()
 	if err != nil {
-		return playbackTarget{}, err
-	}
-
-	cacheRoot := s.ConfigService.ResolvePath(cfg.Paths.PreviewCache)
-	if strings.TrimSpace(cacheRoot) == "" {
-		return playbackTarget{}, fmt.Errorf("preview cache path is empty")
-	}
-
-	switch mode {
-	case ModeMP4:
-		outPath := filepath.Join(cacheRoot, "playback", "mp4", fmt.Sprintf("%d.mp4", item.ID))
-		return playbackTarget{
-			Mode:       ModeMP4,
-			OutputPath: outPath,
-			Partial:    outPath + ".partial",
-		}, nil
-	case ModeHLS:
-		hlsDir := filepath.Join(cacheRoot, "playback", "hls", fmt.Sprintf("%d", item.ID))
-		partialDir := hlsDir + fmt.Sprintf(".partial-%d", time.Now().UTC().UnixNano())
-		return playbackTarget{
-			Mode:       ModeHLS,
-			OutputPath: filepath.Join(hlsDir, "master.m3u8"),
-			HLSDir:     hlsDir,
-			PartialDir: partialDir,
-		}, nil
-	default:
-		return playbackTarget{}, fmt.Errorf("unsupported playback mode: %s", mode)
-	}
-}
-
-func (s *Service) startJob(key string, item *library.MediaItem, sourcePath string, target playbackTarget) *generationJob {
-	s.mu.Lock()
-	if s.jobs == nil {
-		s.jobs = map[string]*generationJob{}
-	}
-	if existing := s.jobs[key]; existing != nil {
-		clone := *existing
-		s.mu.Unlock()
-		return &clone
-	}
-
-	job := &generationJob{
-		key:     key,
-		status:  StatusPreparing,
-		message: "Preparing seekable playback cache.",
-	}
-	s.jobs[key] = job
-	s.mu.Unlock()
-
-	go func() {
-		err := s.generator(context.Background(), cloneMediaItem(item), sourcePath, target)
-
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		if current := s.jobs[key]; current != job {
-			return
-		}
-		if err != nil {
-			job.status = StatusError
-			job.message = err.Error()
-			return
-		}
-		delete(s.jobs, key)
-	}()
-
-	clone := *job
-	return &clone
-}
-
-func (s *Service) generatePlaybackAsset(ctx context.Context, item *library.MediaItem, sourcePath string, target playbackTarget) error {
-	cfg, err := s.ConfigService.Load()
-	if err != nil {
-		return err
+		return nil, err
 	}
 
 	ffmpegPath := s.ConfigService.ResolvePath(cfg.Tools.FFmpeg)
 	if ffmpegPath == "" {
-		return fmt.Errorf("ffmpeg path is empty")
+		return nil, fmt.Errorf("ffmpeg path is empty")
 	}
 	if _, err := os.Stat(ffmpegPath); err != nil {
-		return fmt.Errorf("ffmpeg not found at: %s", ffmpegPath)
-	}
-	if _, err := os.Stat(sourcePath); err != nil {
-		return err
+		return nil, fmt.Errorf("ffmpeg not found at: %s", ffmpegPath)
 	}
 
-	switch target.Mode {
-	case ModeMP4:
-		return generateMP4(ctx, ffmpegPath, item, sourcePath, target)
-	case ModeHLS:
-		return generateHLS(ctx, ffmpegPath, item, sourcePath, target)
-	default:
-		return fmt.Errorf("unsupported playback mode: %s", target.Mode)
+	startSeconds := clampStart(input.StartSeconds, item.DurationSeconds)
+	profile := smoothProfileFor(input.Quality, item.Height)
+	id, err := newSessionID()
+	if err != nil {
+		return nil, err
 	}
+
+	outDir := filepath.Join(sessionRoot(), id)
+	if err := os.MkdirAll(outDir, 0o755); err != nil {
+		return nil, err
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	session := &Session{
+		ID:              id,
+		MediaID:         item.ID,
+		SourcePath:      sourcePath,
+		FFmpegPath:      ffmpegPath,
+		Dir:             outDir,
+		Quality:         profile.Quality,
+		Profile:         profile,
+		Item:            *cloneMediaItem(item),
+		DurationSeconds: item.DurationSeconds,
+		SegmentSeconds:  defaultSegmentSeconds,
+		SegmentCount:    segmentCount(item.DurationSeconds, defaultSegmentSeconds),
+		StartedAt:       time.Now().UTC(),
+		ctx:             ctx,
+		cancel:          cancel,
+		jobs:            map[int]*segmentJob{},
+	}
+
+	s.mu.Lock()
+	if s.sessions == nil {
+		s.sessions = map[string]*Session{}
+	}
+	s.sessions[id] = session
+	s.mu.Unlock()
+
+	return &SessionInfo{
+		SessionID:    id,
+		ManifestURL:  fmt.Sprintf("/api/playback/sessions/%s/index.m3u8", id),
+		Quality:      session.Quality,
+		StartSeconds: startSeconds,
+	}, nil
 }
 
-func generateMP4(ctx context.Context, ffmpegPath string, item *library.MediaItem, sourcePath string, target playbackTarget) error {
-	if err := os.MkdirAll(filepath.Dir(target.OutputPath), 0o755); err != nil {
+func (s *Service) ServeSessionAsset(w http.ResponseWriter, r *http.Request, sessionID string, assetPath string) error {
+	session := s.getSession(sessionID)
+	if session == nil {
+		return ErrSessionNotFound
+	}
+
+	cleanAsset, ok := cleanRelativeAssetPath(assetPath)
+	if !ok {
+		return fmt.Errorf("invalid session asset path")
+	}
+	if cleanAsset == "index.m3u8" {
+		return serveSessionManifest(w, r, session)
+	}
+
+	index, ok := segmentIndex(cleanAsset)
+	if !ok {
+		return os.ErrNotExist
+	}
+	if err := s.ensureSegment(session, index); err != nil {
 		return err
 	}
-	_ = os.Remove(target.Partial)
 
-	args := transcodeMP4Args(sourcePath, target.Partial)
-	if CanRemuxToMP4(item, sourcePath) {
-		args = remuxMP4Args(sourcePath, target.Partial)
-	}
+	go s.prefetchSegments(session.ID, index+1, prefetchSegmentCount)
 
-	if output, err := exec.CommandContext(ctx, ffmpegPath, args...).CombinedOutput(); err != nil {
-		_ = os.Remove(target.Partial)
-		return fmt.Errorf("mp4 playback cache generation failed: %v: %s", err, strings.TrimSpace(string(output)))
-	}
-
-	_ = os.Remove(target.OutputPath)
-	if err := os.Rename(target.Partial, target.OutputPath); err != nil {
-		_ = os.Remove(target.Partial)
-		return err
-	}
-	return nil
+	return serveFile(w, r, session.segmentPath(index), "video/mp2t", "private, max-age=3600")
 }
 
-func generateHLS(ctx context.Context, ffmpegPath string, item *library.MediaItem, sourcePath string, target playbackTarget) error {
-	if err := os.MkdirAll(filepath.Dir(target.HLSDir), 0o755); err != nil {
-		return err
-	}
-	_ = os.RemoveAll(target.PartialDir)
-	if err := os.MkdirAll(target.PartialDir, 0o755); err != nil {
-		return err
+func (s *Service) StopSession(sessionID string) error {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil
 	}
 
-	variants := hlsVariantsFor(item.Height)
-	for _, variant := range variants {
-		args := hlsVariantArgs(sourcePath, target.PartialDir, variant)
-		if output, err := exec.CommandContext(ctx, ffmpegPath, args...).CombinedOutput(); err != nil {
-			_ = os.RemoveAll(target.PartialDir)
-			return fmt.Errorf("hls playback cache generation failed (%s): %v: %s", variant.Name, err, strings.TrimSpace(string(output)))
+	s.mu.Lock()
+	session := s.sessions[sessionID]
+	delete(s.sessions, sessionID)
+	s.mu.Unlock()
+	if session == nil {
+		return nil
+	}
+
+	session.cancel()
+	waitForJobs(session, 2*time.Second)
+	return os.RemoveAll(session.Dir)
+}
+
+func (s *Service) CleanupLegacyPlaybackCache() bool {
+	if s == nil || s.ConfigService == nil {
+		return false
+	}
+
+	cfg, err := s.ConfigService.Load()
+	if err != nil {
+		return false
+	}
+
+	cacheRoot := s.ConfigService.ResolvePath(cfg.Paths.PreviewCache)
+	if strings.TrimSpace(cacheRoot) == "" {
+		return false
+	}
+
+	return os.RemoveAll(filepath.Join(cacheRoot, "playback")) == nil
+}
+
+func (s *Service) CleanupSessionTemp() bool {
+	return os.RemoveAll(sessionRoot()) == nil
+}
+
+func (s *Service) getSession(sessionID string) *Session {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.sessions[strings.TrimSpace(sessionID)]
+}
+
+func (s *Service) ensureSegment(session *Session, index int) error {
+	if session == nil || index < 0 || index >= session.SegmentCount {
+		return os.ErrNotExist
+	}
+	if session.ctx.Err() != nil {
+		return session.ctx.Err()
+	}
+	if fileReady(session.segmentPath(index)) {
+		return nil
+	}
+
+	job, owner := session.beginSegmentJob(index)
+	if owner {
+		job.err = s.generateSegment(session, index)
+		session.finishSegmentJob(index, job)
+	}
+
+	<-job.done
+	return job.err
+}
+
+func (s *Service) generateSegment(session *Session, index int) error {
+	start := float64(index) * session.SegmentSeconds
+	duration := math.Min(session.SegmentSeconds, session.DurationSeconds-start)
+	if duration <= 0 {
+		return os.ErrNotExist
+	}
+	return s.segmentGenerator(session.ctx, session.FFmpegPath, session.SourcePath, session.segmentPath(index), session.Item, session.Profile, start, duration)
+}
+
+func (s *Service) prefetchSegments(sessionID string, startIndex int, count int) {
+	for offset := 0; offset < count; offset++ {
+		session := s.getSession(sessionID)
+		if session == nil {
+			return
+		}
+		index := startIndex + offset
+		if index >= session.SegmentCount {
+			return
+		}
+		if err := s.ensureSegment(session, index); err != nil {
+			return
 		}
 	}
+}
 
-	if err := os.WriteFile(filepath.Join(target.PartialDir, "master.m3u8"), []byte(masterPlaylist(variants)), 0o644); err != nil {
-		_ = os.RemoveAll(target.PartialDir)
+func (session *Session) beginSegmentJob(index int) (*segmentJob, bool) {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+
+	if session.jobs == nil {
+		session.jobs = map[int]*segmentJob{}
+	}
+	if existing := session.jobs[index]; existing != nil {
+		return existing, false
+	}
+	job := &segmentJob{done: make(chan struct{})}
+	session.jobs[index] = job
+	return job, true
+}
+
+func (session *Session) finishSegmentJob(index int, job *segmentJob) {
+	session.mu.Lock()
+	delete(session.jobs, index)
+	session.mu.Unlock()
+	close(job.done)
+}
+
+func (session *Session) activeJobs() []*segmentJob {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+
+	jobs := make([]*segmentJob, 0, len(session.jobs))
+	for _, job := range session.jobs {
+		jobs = append(jobs, job)
+	}
+	return jobs
+}
+
+func (session *Session) segmentPath(index int) string {
+	return filepath.Join(session.Dir, segmentFilename(index))
+}
+
+func waitForJobs(session *Session, timeout time.Duration) {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+
+	for {
+		jobs := session.activeJobs()
+		if len(jobs) == 0 {
+			return
+		}
+		for _, job := range jobs {
+			select {
+			case <-job.done:
+			case <-deadline.C:
+				return
+			}
+		}
+	}
+}
+
+func serveSessionManifest(w http.ResponseWriter, r *http.Request, session *Session) error {
+	manifest := []byte(sessionManifest(session))
+	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Length", strconv.Itoa(len(manifest)))
+	if r.Method == http.MethodHead {
+		return nil
+	}
+	_, err := w.Write(manifest)
+	return err
+}
+
+func sessionManifest(session *Session) string {
+	var b strings.Builder
+	targetDuration := int(math.Ceil(session.SegmentSeconds))
+
+	b.WriteString("#EXTM3U\n")
+	b.WriteString("#EXT-X-VERSION:3\n")
+	b.WriteString(fmt.Sprintf("#EXT-X-TARGETDURATION:%d\n", targetDuration))
+	b.WriteString("#EXT-X-MEDIA-SEQUENCE:0\n")
+	b.WriteString("#EXT-X-PLAYLIST-TYPE:VOD\n")
+	b.WriteString("#EXT-X-INDEPENDENT-SEGMENTS\n")
+	for index := 0; index < session.SegmentCount; index++ {
+		duration := math.Min(session.SegmentSeconds, session.DurationSeconds-float64(index)*session.SegmentSeconds)
+		if duration <= 0 {
+			continue
+		}
+		if index > 0 {
+			b.WriteString("#EXT-X-DISCONTINUITY\n")
+		}
+		b.WriteString(fmt.Sprintf("#EXTINF:%.3f,\n", duration))
+		b.WriteString(segmentFilename(index))
+		b.WriteByte('\n')
+	}
+	b.WriteString("#EXT-X-ENDLIST\n")
+	return b.String()
+}
+
+func runFFmpegSegment(ctx context.Context, ffmpegPath string, sourcePath string, outPath string, item library.MediaItem, profile smoothProfile, startSeconds float64, durationSeconds float64) error {
+	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
 		return err
 	}
 
-	_ = os.RemoveAll(target.HLSDir)
-	if err := os.Rename(target.PartialDir, target.HLSDir); err != nil {
-		_ = os.RemoveAll(target.PartialDir)
+	partial := outPath + ".partial"
+	_ = os.Remove(partial)
+
+	args := hlsSegmentArgs(sourcePath, partial, profile, startSeconds, durationSeconds)
+	output, err := exec.CommandContext(ctx, ffmpegPath, args...).CombinedOutput()
+	if err != nil {
+		_ = os.Remove(partial)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return fmt.Errorf("stream segment generation failed: %v: %s", err, strings.TrimSpace(string(output)))
+	}
+	if !fileReady(partial) {
+		_ = os.Remove(partial)
+		return fmt.Errorf("stream segment generation produced an empty segment")
+	}
+
+	_ = os.Remove(outPath)
+	if err := os.Rename(partial, outPath); err != nil {
+		_ = os.Remove(partial)
 		return err
 	}
 	return nil
+}
+
+func hlsSegmentArgs(sourcePath string, outPath string, profile smoothProfile, startSeconds float64, durationSeconds float64) []string {
+	args := []string{
+		"-hide_banner",
+		"-loglevel", "error",
+		"-y",
+		"-ss", formatSeconds(startSeconds),
+		"-fflags", "+genpts",
+		"-i", sourcePath,
+		"-t", formatSeconds(durationSeconds),
+		"-map", "0:v:0",
+		"-map", "0:a:0?",
+		"-dn",
+		"-sn",
+	}
+
+	if profile.Quality == QualityOriginal {
+		args = append(args,
+			"-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+			"-c:v", "libx264",
+			"-preset", "veryfast",
+			"-crf", profile.CRF,
+		)
+	} else {
+		args = append(args,
+			"-vf", fmt.Sprintf("scale=-2:%d", profile.Height),
+			"-c:v", "libx264",
+			"-preset", "veryfast",
+			"-b:v", profile.Bitrate,
+			"-maxrate", profile.Bitrate,
+			"-bufsize", profile.Bufsize,
+		)
+	}
+
+	args = append(args,
+		"-pix_fmt", "yuv420p",
+		"-c:a", "aac",
+		"-b:a", "128k",
+		"-ac", "2",
+		"-avoid_negative_ts", "make_zero",
+		"-muxdelay", "0",
+		"-f", "mpegts",
+		outPath,
+	)
+	return args
+}
+
+func smoothProfileFor(quality string, sourceHeight int) smoothProfile {
+	switch normalizeQuality(quality) {
+	case QualityOriginal:
+		return smoothProfile{Quality: QualityOriginal, Height: originalEvenHeight(sourceHeight), CRF: "18"}
+	case Quality360p:
+		return smoothProfile{Quality: Quality360p, Height: cappedEvenHeight(360, sourceHeight), Bitrate: "800k", Bufsize: "1600k"}
+	case Quality480p:
+		return smoothProfile{Quality: Quality480p, Height: cappedEvenHeight(480, sourceHeight), Bitrate: "1400k", Bufsize: "2800k"}
+	default:
+		return smoothProfile{Quality: Quality720p, Height: cappedEvenHeight(720, sourceHeight), Bitrate: "2500k", Bufsize: "5000k"}
+	}
+}
+
+func originalEvenHeight(sourceHeight int) int {
+	if sourceHeight <= 0 {
+		return 0
+	}
+	if sourceHeight%2 != 0 {
+		sourceHeight--
+	}
+	if sourceHeight < 2 {
+		return 0
+	}
+	return sourceHeight
+}
+
+func cappedEvenHeight(target int, sourceHeight int) int {
+	height := target
+	if sourceHeight > 0 && sourceHeight < height {
+		height = sourceHeight
+	}
+	if height < 360 && sourceHeight <= 0 {
+		height = 360
+	}
+	if height%2 != 0 {
+		height--
+	}
+	if height < 2 {
+		height = 2
+	}
+	return height
 }
 
 func CanServeDirectlyToBrowser(item *library.MediaItem, sourcePath string) bool {
@@ -383,21 +584,7 @@ func CanServeDirectlyToBrowser(item *library.MediaItem, sourcePath string) bool 
 	}
 }
 
-func CanRemuxToMP4(item *library.MediaItem, sourcePath string) bool {
-	if item == nil {
-		return false
-	}
-	videoCodec := normalizeCodec(item.VideoCodec)
-	audioCodec := normalizeCodec(item.AudioCodec)
-	return isH264(videoCodec) && isMP4Audio(audioCodec) && mediaExtension(item, sourcePath) != ".webm"
-}
-
-func serveDirect(w http.ResponseWriter, r *http.Request, sourcePath string) error {
-	contentType := mime.TypeByExtension(filepath.Ext(sourcePath))
-	return serveFile(w, r, sourcePath, contentType)
-}
-
-func serveFile(w http.ResponseWriter, r *http.Request, path string, contentType string) error {
+func serveFile(w http.ResponseWriter, r *http.Request, path string, contentType string, cacheControl string) error {
 	file, err := os.Open(path)
 	if err != nil {
 		return err
@@ -412,141 +599,83 @@ func serveFile(w http.ResponseWriter, r *http.Request, path string, contentType 
 	if contentType != "" {
 		w.Header().Set("Content-Type", contentType)
 	}
-	w.Header().Set("Cache-Control", "private, max-age=86400")
+	if cacheControl != "" {
+		w.Header().Set("Cache-Control", cacheControl)
+	}
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 
 	http.ServeContent(w, r, filepath.Base(path), info.ModTime(), file)
 	return nil
 }
 
-func remuxMP4Args(sourcePath string, outPath string) []string {
-	return []string{
-		"-hide_banner",
-		"-loglevel", "error",
-		"-y",
-		"-i", sourcePath,
-		"-map", "0:v:0",
-		"-map", "0:a:0?",
-		"-dn",
-		"-sn",
-		"-c", "copy",
-		"-movflags", "+faststart",
-		outPath,
+func fileReady(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Size() > 0
+}
+
+func newSessionID() (string, error) {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(raw[:]), nil
+}
+
+func sessionRoot() string {
+	return filepath.Join(os.TempDir(), "mediavault-playback-sessions")
+}
+
+func segmentCount(durationSeconds float64, segmentSeconds float64) int {
+	if durationSeconds <= 0 || segmentSeconds <= 0 {
+		return 1
+	}
+	return int(math.Max(1, math.Ceil(durationSeconds/segmentSeconds)))
+}
+
+func segmentFilename(index int) string {
+	return fmt.Sprintf("segment_%05d.ts", index)
+}
+
+func segmentIndex(path string) (int, bool) {
+	base := filepath.Base(path)
+	if !strings.HasPrefix(base, "segment_") || !strings.HasSuffix(base, ".ts") {
+		return 0, false
+	}
+	raw := strings.TrimSuffix(strings.TrimPrefix(base, "segment_"), ".ts")
+	if len(raw) != 5 {
+		return 0, false
+	}
+	index, err := strconv.Atoi(raw)
+	return index, err == nil
+}
+
+func normalizeQuality(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case QualityOriginal:
+		return QualityOriginal
+	case Quality360p:
+		return Quality360p
+	case Quality480p:
+		return Quality480p
+	case Quality720p:
+		return Quality720p
+	default:
+		return QualityAuto
 	}
 }
 
-func transcodeMP4Args(sourcePath string, outPath string) []string {
-	return []string{
-		"-hide_banner",
-		"-loglevel", "error",
-		"-y",
-		"-i", sourcePath,
-		"-map", "0:v:0",
-		"-map", "0:a:0?",
-		"-dn",
-		"-sn",
-		"-c:v", "libx264",
-		"-preset", "veryfast",
-		"-crf", "23",
-		"-pix_fmt", "yuv420p",
-		"-c:a", "aac",
-		"-b:a", "160k",
-		"-ac", "2",
-		"-movflags", "+faststart",
-		outPath,
+func clampStart(value float64, duration float64) float64 {
+	if value < 0 {
+		return 0
 	}
+	if duration > 0 && value > duration-2 {
+		return math.Max(duration-2, 0)
+	}
+	return value
 }
 
-func hlsVariantArgs(sourcePath string, outDir string, variant hlsVariant) []string {
-	playlistPath := filepath.Join(outDir, variant.Name+".m3u8")
-	segmentPath := filepath.Join(outDir, variant.Name+"_%05d.ts")
-	return []string{
-		"-hide_banner",
-		"-loglevel", "error",
-		"-y",
-		"-i", sourcePath,
-		"-map", "0:v:0",
-		"-map", "0:a:0?",
-		"-dn",
-		"-sn",
-		"-vf", fmt.Sprintf("scale=-2:%d", variant.Height),
-		"-c:v", "libx264",
-		"-preset", "veryfast",
-		"-b:v", variant.Bitrate,
-		"-maxrate", variant.Bitrate,
-		"-bufsize", hlsBufferSize(variant.Bitrate),
-		"-pix_fmt", "yuv420p",
-		"-c:a", "aac",
-		"-b:a", "128k",
-		"-ac", "2",
-		"-hls_time", "6",
-		"-hls_playlist_type", "vod",
-		"-hls_segment_filename", segmentPath,
-		playlistPath,
-	}
-}
-
-func hlsVariantsFor(sourceHeight int) []hlsVariant {
-	candidates := []hlsVariant{
-		{Name: "720p", Height: 720, Bitrate: "2800k", Peak: 3000000},
-		{Name: "480p", Height: 480, Bitrate: "1400k", Peak: 1600000},
-		{Name: "360p", Height: 360, Bitrate: "800k", Peak: 1000000},
-	}
-
-	out := make([]hlsVariant, 0, len(candidates))
-	for _, candidate := range candidates {
-		if sourceHeight <= 0 || candidate.Height <= sourceHeight {
-			out = append(out, candidate)
-		}
-	}
-	if len(out) == 0 {
-		return []hlsVariant{candidates[len(candidates)-1]}
-	}
-	return out
-}
-
-func masterPlaylist(variants []hlsVariant) string {
-	var b strings.Builder
-	b.WriteString("#EXTM3U\n")
-	b.WriteString("#EXT-X-VERSION:3\n")
-	for _, variant := range variants {
-		b.WriteString(fmt.Sprintf("#EXT-X-STREAM-INF:BANDWIDTH=%d,RESOLUTION=%dx%d\n", variant.Peak, scaledWidth(variant.Height), variant.Height))
-		b.WriteString(variant.Name + ".m3u8\n")
-	}
-	return b.String()
-}
-
-func hlsBufferSize(bitrate string) string {
-	value := strings.TrimSuffix(bitrate, "k")
-	return value + "k"
-}
-
-func scaledWidth(height int) int {
-	if height <= 0 {
-		return 640
-	}
-	width := height * 16 / 9
-	if width%2 != 0 {
-		width++
-	}
-	return width
-}
-
-func isFresh(sourcePath string, targetPath string) (bool, error) {
-	srcInfo, err := os.Stat(sourcePath)
-	if err != nil {
-		return false, err
-	}
-
-	dstInfo, err := os.Stat(targetPath)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return false, nil
-		}
-		return false, err
-	}
-
-	return !srcInfo.ModTime().After(dstInfo.ModTime()), nil
+func formatSeconds(value float64) string {
+	return strconv.FormatFloat(value, 'f', 3, 64)
 }
 
 func mediaExtension(item *library.MediaItem, sourcePath string) string {
@@ -605,46 +734,6 @@ func isWebMAudio(codec string) bool {
 	}
 }
 
-func readyStatus(item *library.MediaItem, mode string) *PlaybackStatus {
-	status := &PlaybackStatus{
-		Status:          StatusReady,
-		Mode:            mode,
-		Seekable:        true,
-		DurationSeconds: item.DurationSeconds,
-	}
-
-	switch mode {
-	case ModeDirect, ModeMP4:
-		status.StreamURL = fmt.Sprintf("/api/library/%d/stream", item.ID)
-	case ModeHLS:
-		status.HLSManifestURL = fmt.Sprintf("/api/library/%d/playback/hls/master.m3u8", item.ID)
-	}
-
-	return status
-}
-
-func preparingStatus(item *library.MediaItem, mode string, status string, message string) *PlaybackStatus {
-	if status == "" {
-		status = StatusPreparing
-	}
-	if strings.TrimSpace(message) == "" {
-		message = "Preparing seekable playback cache."
-	}
-	return &PlaybackStatus{
-		Status:          status,
-		Mode:            mode,
-		StreamURL:       fmt.Sprintf("/api/library/%d/stream", item.ID),
-		HLSManifestURL:  fmt.Sprintf("/api/library/%d/playback/hls/master.m3u8", item.ID),
-		Seekable:        false,
-		DurationSeconds: item.DurationSeconds,
-		Message:         message,
-	}
-}
-
-func jobKey(mediaID int64, mode string) string {
-	return fmt.Sprintf("%d:%s", mediaID, mode)
-}
-
 func cloneMediaItem(item *library.MediaItem) *library.MediaItem {
 	if item == nil {
 		return nil
@@ -665,10 +754,4 @@ func cleanRelativeAssetPath(value string) (string, bool) {
 	return cleaned, true
 }
 
-type NotReadyError struct {
-	Mode string
-}
-
-func (e *NotReadyError) Error() string {
-	return fmt.Sprintf("%s playback cache is not ready", e.Mode)
-}
+var ErrSessionNotFound = errors.New("playback session not found")

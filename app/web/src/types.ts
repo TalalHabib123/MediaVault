@@ -192,17 +192,25 @@ export type PlayerContextResponse = {
   item: MediaItem;
   prev_episode_id: number | null;
   next_episode_id: number | null;
-  playback: PlaybackStatus;
+  playback: PlaybackPlan;
 };
 
-export type PlaybackStatus = {
-  status: "ready" | "preparing" | "error" | string;
-  mode: "direct" | "mp4" | "hls" | string;
+export type PlaybackPlan = {
+  mode: "direct" | "smooth_hls" | string;
   stream_url: string;
-  hls_manifest_url: string;
+  session_url: string;
+  manifest_url: string;
   seekable: boolean;
   duration_seconds: number;
+  quality: "auto" | "original" | "720p" | "480p" | "360p" | string;
   message: string;
+};
+
+export type PlaybackSessionResponse = {
+  session_id: string;
+  manifest_url: string;
+  quality: string;
+  start_seconds: number;
 };
 
 export type BulkTaggingPayload = {

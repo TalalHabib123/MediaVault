@@ -1,29 +1,42 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { Alert } from "../../components/ui/alert";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import { Card } from "../../components/ui/card";
 import { apiFetch } from "../../lib/api";
-import type { PlaybackStatus, PlayerContextResponse } from "../../types";
+import type {
+  PlaybackSessionResponse,
+  PlayerContextResponse,
+} from "../../types";
 import {
   formatDuration,
   formatMediaTypeLong,
   formatResolution,
 } from "../library/media-format";
 
+type PlaybackModeChoice = "auto" | "original" | "smooth";
+type SmoothQuality = "auto" | "original" | "720p" | "480p" | "360p";
+
 export function PlayerPage() {
   const { id } = useParams();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  const prewarmedForRef = useRef<number | null>(null);
+  const hlsRef = useRef<import("hls.js").default | null>(null);
+  const sessionRef = useRef<PlaybackSessionResponse | null>(null);
 
   const [data, setData] = useState<PlayerContextResponse | null>(null);
-  const [playback, setPlayback] = useState<PlaybackStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [vlcBusy, setVlcBusy] = useState(false);
+  const [modeChoice, setModeChoice] = useState<PlaybackModeChoice>("auto");
+  const [smoothQuality, setSmoothQuality] = useState<SmoothQuality>("auto");
+  const [smoothStartSeconds, setSmoothStartSeconds] = useState(0);
+  const [directSeekSeconds, setDirectSeekSeconds] = useState<number | null>(null);
+  const [startingSmooth, setStartingSmooth] = useState(false);
+  const [activeSession, setActiveSession] =
+    useState<PlaybackSessionResponse | null>(null);
 
   const returnTo = searchParams.get("return_to") || "/?tab=library";
 
@@ -32,12 +45,14 @@ export function PlayerPage() {
       setLoading(true);
       setError("");
       setData(null);
-      setPlayback(null);
+      setModeChoice("auto");
+      setSmoothQuality("auto");
+      setSmoothStartSeconds(0);
+      setDirectSeekSeconds(null);
       const response = await apiFetch<PlayerContextResponse>(
         `/api/library/${id}/player-context`,
       );
       setData(response);
-      setPlayback(response.playback);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load player");
     } finally {
@@ -48,6 +63,199 @@ export function PlayerPage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  const originalUsesSmooth =
+    modeChoice === "original" && data?.playback.mode === "smooth_hls";
+  const effectiveMode = useMemo<"original" | "smooth">(() => {
+    if (modeChoice === "original") {
+      return data?.playback.mode === "smooth_hls" ? "smooth" : "original";
+    }
+    if (modeChoice === "smooth") return "smooth";
+    return data?.playback.mode === "smooth_hls" ? "smooth" : "original";
+  }, [data?.playback.mode, modeChoice]);
+  const smoothSessionQuality: SmoothQuality = originalUsesSmooth
+    ? "original"
+    : smoothQuality;
+
+  const stopSession = useCallback((updateState = true) => {
+    const session = sessionRef.current;
+    sessionRef.current = null;
+    if (updateState) setActiveSession(null);
+    if (!session) return;
+    void apiFetch<{ ok: boolean }>(
+      `/api/playback/sessions/${session.session_id}`,
+      { method: "DELETE" },
+    ).catch(() => {});
+  }, []);
+
+  const destroyHLS = useCallback(() => {
+    hlsRef.current?.destroy();
+    hlsRef.current = null;
+    const video = videoRef.current;
+    if (video && effectiveMode === "smooth") {
+      video.removeAttribute("src");
+      video.load();
+    }
+  }, [effectiveMode]);
+
+  const currentAbsoluteTime = useCallback(() => {
+    const video = videoRef.current;
+    if (!video) return 0;
+    return Number.isFinite(video.currentTime) ? video.currentTime : 0;
+  }, []);
+
+  const startSmoothAt = useCallback((seconds: number) => {
+    const safeSeconds = Math.max(0, seconds);
+    setDirectSeekSeconds(safeSeconds);
+    setSmoothStartSeconds(safeSeconds);
+  }, []);
+
+  const chooseMode = useCallback(
+    (nextMode: PlaybackModeChoice) => {
+      const currentTime = currentAbsoluteTime();
+      if (nextMode === "smooth") {
+        startSmoothAt(currentTime);
+      }
+      if (nextMode === "original") {
+        if (data?.playback.mode === "smooth_hls") {
+          startSmoothAt(currentTime);
+        } else {
+          setDirectSeekSeconds(currentTime);
+        }
+      }
+      if (nextMode === "auto" && data?.playback.mode === "smooth_hls") {
+        startSmoothAt(currentTime);
+      }
+      setModeChoice(nextMode);
+    },
+    [currentAbsoluteTime, data?.playback.mode, startSmoothAt],
+  );
+
+  useEffect(() => {
+    return () => {
+      hlsRef.current?.destroy();
+      stopSession(false);
+    };
+  }, [stopSession]);
+
+  useEffect(() => {
+    if (!data || effectiveMode !== "smooth") {
+      destroyHLS();
+      stopSession();
+      setStartingSmooth(false);
+      return;
+    }
+
+    let canceled = false;
+    const video = videoRef.current;
+    const sessionURL = data.playback.session_url;
+    if (!video) return;
+    const videoEl = video;
+
+    async function startSession() {
+      try {
+        destroyHLS();
+        stopSession();
+        setError("");
+        setStartingSmooth(true);
+
+        const resumeAt = Math.max(0, smoothStartSeconds);
+        const session = await apiFetch<PlaybackSessionResponse>(
+          sessionURL,
+          {
+            method: "POST",
+            body: JSON.stringify({
+              start_seconds: resumeAt,
+              quality: smoothSessionQuality,
+            }),
+          },
+        );
+
+        if (canceled) {
+          void apiFetch<{ ok: boolean }>(
+            `/api/playback/sessions/${session.session_id}`,
+            { method: "DELETE" },
+          ).catch(() => {});
+          return;
+        }
+
+        sessionRef.current = session;
+        setActiveSession(session);
+
+        if (videoEl.canPlayType("application/vnd.apple.mpegurl")) {
+          const onLoadedMetadata = () => {
+            if (resumeAt > 0) videoEl.currentTime = resumeAt;
+            void videoEl.play().catch(() => {});
+            setStartingSmooth(false);
+          };
+          videoEl.addEventListener("loadedmetadata", onLoadedMetadata, {
+            once: true,
+          });
+          videoEl.src = session.manifest_url;
+          return;
+        }
+
+        const { default: Hls } = await import("hls.js");
+        if (canceled) return;
+        if (!Hls.isSupported()) {
+          setError("This browser cannot play the smooth stream.");
+          setStartingSmooth(false);
+          return;
+        }
+
+        const hls = new Hls({
+          maxBufferLength: 90,
+          maxMaxBufferLength: 180,
+          backBufferLength: 90,
+        });
+        hlsRef.current = hls;
+        hls.loadSource(session.manifest_url);
+        hls.attachMedia(videoEl);
+        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+          if (resumeAt > 0) videoEl.currentTime = resumeAt;
+          setStartingSmooth(false);
+          void videoEl.play().catch(() => {});
+        });
+        hls.on(Hls.Events.ERROR, (_event, hlsError) => {
+          if (hlsError.fatal) {
+            if (hlsError.type === Hls.ErrorTypes.MEDIA_ERROR) {
+              hls.recoverMediaError();
+              return;
+            }
+            if (hlsError.type === Hls.ErrorTypes.NETWORK_ERROR) {
+              hls.startLoad(videoEl.currentTime);
+              return;
+            }
+            setError(
+              "Playback stopped. Try Smooth at a lower quality or restart playback.",
+            );
+            setStartingSmooth(false);
+          }
+        });
+      } catch (err) {
+        if (!canceled) {
+          setError(
+            err instanceof Error ? err.message : "Failed to start smooth stream",
+          );
+          setStartingSmooth(false);
+        }
+      }
+    }
+
+    void startSession();
+    return () => {
+      canceled = true;
+      destroyHLS();
+      stopSession(false);
+    };
+  }, [
+    data,
+    destroyHLS,
+    effectiveMode,
+    smoothSessionQuality,
+    smoothStartSeconds,
+    stopSession,
+  ]);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -63,124 +271,35 @@ export function PlayerPage() {
         }
       }
 
-      if (event.key === "ArrowLeft") {
-        video.currentTime = Math.max(video.currentTime - 10, 0);
-      }
-
-      if (event.key === "ArrowRight") {
-        const duration = Number.isFinite(video.duration) ? video.duration : 0;
-        video.currentTime = Math.min(video.currentTime + 10, duration);
+      if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+        const delta = event.key === "ArrowLeft" ? -10 : 10;
+        const duration = Number.isFinite(video.duration)
+          ? video.duration
+          : data?.item.duration_seconds || 0;
+        video.currentTime = Math.min(
+          Math.max(video.currentTime + delta, 0),
+          duration || Number.MAX_SAFE_INTEGER,
+        );
       }
 
       if (event.key === "Escape") {
+        stopSession(false);
         navigate(returnTo);
       }
     }
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [navigate, returnTo]);
-
-  useEffect(() => {
-    if (!data || !playback || playback.status !== "preparing") return;
-
-    const mediaID = data.item.id;
-    let canceled = false;
-    let timer: number | undefined;
-
-    async function pollPlayback() {
-      try {
-        const next = await apiFetch<PlaybackStatus>(
-          `/api/library/${mediaID}/playback/status?mode=auto`,
-        );
-        if (canceled) return;
-        setPlayback(next);
-        if (next.status === "preparing") {
-          timer = window.setTimeout(pollPlayback, 2000);
-        }
-      } catch (err) {
-        if (!canceled) {
-          setError(
-            err instanceof Error
-              ? err.message
-              : "Failed to prepare playback",
-          );
-        }
-      }
-    }
-
-    timer = window.setTimeout(pollPlayback, 1200);
-    return () => {
-      canceled = true;
-      if (timer) window.clearTimeout(timer);
-    };
-  }, [data, playback]);
-
-  useEffect(() => {
-    if (!data || playback?.status !== "ready") return;
-    if (prewarmedForRef.current === data.item.id) return;
-    prewarmedForRef.current = data.item.id;
-
-    const adjacentIDs = [data.prev_episode_id, data.next_episode_id].filter(
-      (value): value is number => typeof value === "number" && value > 0,
-    );
-    for (const adjacentID of adjacentIDs) {
-      void apiFetch<PlaybackStatus>(
-        `/api/library/${adjacentID}/playback/status?mode=auto`,
-      ).catch(() => {});
-    }
-  }, [data, playback?.status]);
-
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video || playback?.status !== "ready" || playback.mode !== "hls") {
-      return;
-    }
-
-    const manifestURL = playback.hls_manifest_url;
-    if (!manifestURL) return;
-
-    let canceled = false;
-    let hls: import("hls.js").default | null = null;
-
-    if (video.canPlayType("application/vnd.apple.mpegurl")) {
-      video.src = manifestURL;
-      return () => {
-        video.removeAttribute("src");
-        video.load();
-      };
-    }
-
-    void import("hls.js")
-      .then(({ default: Hls }) => {
-        if (canceled) return;
-        if (!Hls.isSupported()) {
-          setError("This browser cannot play the prepared HLS stream.");
-          return;
-        }
-        hls = new Hls({
-          maxBufferLength: 30,
-          maxMaxBufferLength: 120,
-          backBufferLength: 30,
-        });
-        hls.loadSource(manifestURL);
-        hls.attachMedia(video);
-      })
-      .catch((err) => {
-        if (!canceled) {
-          setError(
-            err instanceof Error ? err.message : "Failed to load HLS player",
-          );
-        }
-      });
-
-    return () => {
-      canceled = true;
-      hls?.destroy();
-    };
-  }, [playback?.hls_manifest_url, playback?.mode, playback?.status]);
+  }, [
+    currentAbsoluteTime,
+    data?.item.duration_seconds,
+    navigate,
+    returnTo,
+    stopSession,
+  ]);
 
   function goBackToSourcePage() {
+    stopSession(false);
     navigate(returnTo);
   }
 
@@ -195,6 +314,21 @@ export function PlayerPage() {
       setError(err instanceof Error ? err.message : "Failed to open in VLC");
     } finally {
       setVlcBusy(false);
+    }
+  }
+
+  function onDirectLoadedMetadata() {
+    const video = videoRef.current;
+    if (!video || directSeekSeconds === null || effectiveMode !== "original") {
+      return;
+    }
+    video.currentTime = Math.max(0, directSeekSeconds);
+    setDirectSeekSeconds(null);
+  }
+
+  function onVideoPlaybackError() {
+    if (effectiveMode === "original") {
+      setError("Original direct playback failed. Try Smooth or Open VLC.");
     }
   }
 
@@ -228,9 +362,16 @@ export function PlayerPage() {
   }
 
   const item = data.item;
-  const playbackReady = playback?.status === "ready";
-  const videoSource =
-    playbackReady && playback?.mode !== "hls" ? playback.stream_url : undefined;
+  const directSource =
+    effectiveMode === "original" ? data.playback.stream_url : undefined;
+  const playbackBadgeText =
+    originalUsesSmooth || effectiveMode === "original" ? "Original" : "Smooth";
+  const playbackBadgeVariant =
+    originalUsesSmooth || effectiveMode === "original" ? "success" : "warning";
+  const activeQualityLabel =
+    activeSession?.quality === "original"
+      ? "Source resolution"
+      : activeSession?.quality;
 
   return (
     <div className="player-page">
@@ -246,6 +387,12 @@ export function PlayerPage() {
             <Badge variant="default">{formatMediaTypeLong(item.media_type)}</Badge>
             <Badge variant="info">{formatDuration(item.duration_seconds)}</Badge>
             <Badge variant="accent">{formatResolution(item)}</Badge>
+            <Badge variant={playbackBadgeVariant}>
+              {playbackBadgeText}
+            </Badge>
+            {activeSession ? (
+              <Badge variant="info">{activeQualityLabel}</Badge>
+            ) : null}
             {item.company_name ? (
               <Badge variant="success">{item.company_name}</Badge>
             ) : null}
@@ -260,41 +407,82 @@ export function PlayerPage() {
           </div>
         </div>
 
-        <div className="flex flex-wrap gap-2">
-          <Button
-            onClick={() =>
-              data.prev_episode_id &&
-              navigate(
-                `/player/${data.prev_episode_id}?return_to=${encodeURIComponent(returnTo)}`,
-              )
-            }
-            disabled={!data.prev_episode_id}
-            variant="outline"
-            size="sm"
-          >
-            Previous
-          </Button>
-          <Button
-            onClick={() =>
-              data.next_episode_id &&
-              navigate(
-                `/player/${data.next_episode_id}?return_to=${encodeURIComponent(returnTo)}`,
-              )
-            }
-            disabled={!data.next_episode_id}
-            variant="outline"
-            size="sm"
-          >
-            Next
-          </Button>
-          <Button
-            onClick={openInVLC}
-            disabled={vlcBusy}
-            variant="primary"
-            size="sm"
-          >
-            {vlcBusy ? "Opening..." : "Open VLC"}
-          </Button>
+        <div className="player-actions">
+          <div className="player-mode-controls" aria-label="Playback mode">
+            <Button
+              onClick={() => chooseMode("auto")}
+              variant={modeChoice === "auto" ? "primary" : "outline"}
+              size="sm"
+            >
+              Auto
+            </Button>
+            <Button
+              onClick={() => chooseMode("original")}
+              variant={modeChoice === "original" ? "primary" : "outline"}
+              size="sm"
+            >
+              Original
+            </Button>
+            <Button
+              onClick={() => chooseMode("smooth")}
+              variant={modeChoice === "smooth" ? "primary" : "outline"}
+              size="sm"
+            >
+              Smooth
+            </Button>
+            <select
+              aria-label="Smooth quality"
+              className="player-quality-select"
+              value={originalUsesSmooth ? "original" : smoothQuality}
+              disabled={effectiveMode !== "smooth" || originalUsesSmooth}
+              onChange={(event) =>
+                setSmoothQuality(event.target.value as SmoothQuality)
+              }
+            >
+              <option value="auto">Auto</option>
+              <option value="original">Original</option>
+              <option value="720p">720p</option>
+              <option value="480p">480p</option>
+              <option value="360p">360p</option>
+            </select>
+          </div>
+
+          <div className="flex flex-wrap gap-2">
+            <Button
+              onClick={() =>
+                data.prev_episode_id &&
+                navigate(
+                  `/player/${data.prev_episode_id}?return_to=${encodeURIComponent(returnTo)}`,
+                )
+              }
+              disabled={!data.prev_episode_id}
+              variant="outline"
+              size="sm"
+            >
+              Previous
+            </Button>
+            <Button
+              onClick={() =>
+                data.next_episode_id &&
+                navigate(
+                  `/player/${data.next_episode_id}?return_to=${encodeURIComponent(returnTo)}`,
+                )
+              }
+              disabled={!data.next_episode_id}
+              variant="outline"
+              size="sm"
+            >
+              Next
+            </Button>
+            <Button
+              onClick={openInVLC}
+              disabled={vlcBusy}
+              variant="primary"
+              size="sm"
+            >
+              {vlcBusy ? "Opening..." : "Open VLC"}
+            </Button>
+          </div>
         </div>
       </div>
 
@@ -305,30 +493,24 @@ export function PlayerPage() {
       ) : null}
 
       <main className="player-stage">
-        {playbackReady ? (
-          <video
-            ref={videoRef}
-            key={`${item.id}-${playback.mode}-${videoSource ?? playback.hls_manifest_url}`}
-            src={videoSource}
-            controls
-            autoPlay
-            preload="auto"
-            className="h-full w-full object-contain"
-          />
-        ) : (
-          <div className="player-preparing" role="status">
-            <div className="brand-mark">MV</div>
-            <h2>
-              {playback?.status === "error"
-                ? "Playback preparation failed"
-                : "Preparing playback"}
-            </h2>
-            <p>
-              {playback?.message ||
-                "Creating a seekable stream for this video."}
-            </p>
+        <video
+          ref={videoRef}
+          key={`${item.id}-${effectiveMode}-${directSource ?? "smooth"}`}
+          src={directSource}
+          controls
+          autoPlay
+          preload="auto"
+          onLoadedMetadata={onDirectLoadedMetadata}
+          onError={onVideoPlaybackError}
+          className="h-full w-full object-contain"
+        />
+        {startingSmooth ? (
+          <div className="player-starting" role="status">
+            {originalUsesSmooth
+              ? "Starting original stream..."
+              : "Starting smooth stream..."}
           </div>
-        )}
+        ) : null}
       </main>
     </div>
   );

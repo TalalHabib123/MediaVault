@@ -7,7 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"sync/atomic"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -29,19 +30,13 @@ func TestCanServeDirectlyToBrowser(t *testing.T) {
 			wantDirect: true,
 		},
 		{
-			name:       "mp4 with ac3 audio needs compatible stream",
+			name:       "mp4 with ac3 audio is not browser-native",
 			path:       `C:\media\movie.mp4`,
 			item:       mediaItem(1, "h264", "ac3", ".mp4"),
 			wantDirect: false,
 		},
 		{
-			name:       "transport stream needs compatible stream",
-			path:       `C:\media\movie.ts`,
-			item:       mediaItem(1, "h264", "aac", ".ts"),
-			wantDirect: false,
-		},
-		{
-			name:       "mkv container needs compatible stream",
+			name:       "mkv container is not browser-native",
 			path:       `C:\media\movie.mkv`,
 			item:       mediaItem(1, "h264", "aac", ".mkv"),
 			wantDirect: false,
@@ -53,7 +48,7 @@ func TestCanServeDirectlyToBrowser(t *testing.T) {
 			wantDirect: true,
 		},
 		{
-			name:       "unknown codecs use compatible stream",
+			name:       "unknown codecs are not browser-native",
 			path:       `C:\media\movie.mp4`,
 			item:       mediaItem(1, "", "", ".mp4"),
 			wantDirect: false,
@@ -70,208 +65,349 @@ func TestCanServeDirectlyToBrowser(t *testing.T) {
 	}
 }
 
-func TestMP4ArgsUseSeekableFiles(t *testing.T) {
-	remuxArgs := remuxMP4Args(`C:\media\movie.mkv`, `C:\cache\movie.mp4.partial`)
-	for _, want := range []string{"copy", "+faststart", `C:\cache\movie.mp4.partial`} {
-		if !slices.Contains(remuxArgs, want) {
-			t.Fatalf("remuxMP4Args() missing %q in %#v", want, remuxArgs)
-		}
-	}
-	if slices.Contains(remuxArgs, "pipe:1") {
-		t.Fatalf("remuxMP4Args() should not pipe output: %#v", remuxArgs)
-	}
-
-	transcodeArgs := transcodeMP4Args(`C:\media\movie.ts`, `C:\cache\movie.mp4.partial`)
-	for _, want := range []string{"libx264", "aac", "+faststart", `C:\cache\movie.mp4.partial`} {
-		if !slices.Contains(transcodeArgs, want) {
-			t.Fatalf("transcodeMP4Args() missing %q in %#v", want, transcodeArgs)
-		}
-	}
-	if slices.Contains(transcodeArgs, "pipe:1") {
-		t.Fatalf("transcodeMP4Args() should not pipe output: %#v", transcodeArgs)
-	}
-}
-
-func TestResolveModeKeepsLocalDirectAndUsesRemoteHLS(t *testing.T) {
-	service := NewService(config.NewService(t.TempDir()))
-	item := mediaItem(10, "h264", "aac", ".mp4")
-
-	if got := service.resolveMode(item, `C:\media\movie.mp4`, ModeAuto, false); got != ModeDirect {
-		t.Fatalf("local mode = %q, want %q", got, ModeDirect)
-	}
-	if got := service.resolveMode(item, `C:\media\movie.mp4`, ModeAuto, true); got != ModeHLS {
-		t.Fatalf("remote mode = %q, want %q", got, ModeHLS)
-	}
-}
-
-func TestServeDirectSupportsRangeRequests(t *testing.T) {
+func TestPlanReturnsImmediatelyWithoutGeneratingSegments(t *testing.T) {
 	root := t.TempDir()
-	path := filepath.Join(root, "clip.mp4")
-	if err := os.WriteFile(path, []byte("0123456789"), 0o644); err != nil {
-		t.Fatalf("write media: %v", err)
+	service := NewService(config.NewService(root))
+	service.segmentGenerator = func(ctx context.Context, ffmpegPath string, sourcePath string, outPath string, item library.MediaItem, profile smoothProfile, startSeconds float64, durationSeconds float64) error {
+		t.Fatalf("Plan should not generate segments")
+		return nil
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/clip.mp4", nil)
-	req.Header.Set("Range", "bytes=2-5")
-	rec := httptest.NewRecorder()
+	sourcePath := writeFile(t, root, "media/movie.mkv", "source")
+	plan, err := service.Plan(mediaItem(12, "h264", "aac", ".mkv"), sourcePath, true)
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	if plan.Mode != ModeSmoothHLS {
+		t.Fatalf("mode = %q, want %q", plan.Mode, ModeSmoothHLS)
+	}
+	if !plan.Seekable {
+		t.Fatalf("expected smooth plan to expose a seekable VOD manifest")
+	}
+	if plan.SessionURL != "/api/library/12/playback/session" {
+		t.Fatalf("session_url = %q", plan.SessionURL)
+	}
+}
 
-	if err := serveDirect(rec, req, path); err != nil {
-		t.Fatalf("serve direct: %v", err)
+func TestBrowserNativePlanUsesDirectEvenForRemoteRequests(t *testing.T) {
+	root := t.TempDir()
+	service := NewService(config.NewService(root))
+	sourcePath := writeFile(t, root, "media/movie.mp4", "source")
+
+	plan, err := service.Plan(mediaItem(15, "h264", "aac", ".mp4"), sourcePath, true)
+	if err != nil {
+		t.Fatalf("plan: %v", err)
 	}
-	if rec.Code != http.StatusPartialContent {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusPartialContent)
+	if plan.Mode != ModeDirect {
+		t.Fatalf("mode = %q, want %q", plan.Mode, ModeDirect)
 	}
-	if got := rec.Header().Get("Content-Range"); got != "bytes 2-5/10" {
+	if plan.StreamURL != "/api/library/15/stream" {
+		t.Fatalf("stream_url = %q", plan.StreamURL)
+	}
+	if !plan.Seekable {
+		t.Fatalf("direct plan should be seekable")
+	}
+}
+
+func TestServeOriginalSupportsHeadAndRangeRequests(t *testing.T) {
+	root := t.TempDir()
+	path := writeFile(t, root, "media/clip.mp4", "0123456789")
+	service := NewService(config.NewService(root))
+
+	headReq := httptest.NewRequest(http.MethodHead, "/clip.mp4", nil)
+	headRec := httptest.NewRecorder()
+	if err := service.Serve(headRec, headReq, mediaItem(1, "h264", "aac", ".mp4"), path); err != nil {
+		t.Fatalf("serve head: %v", err)
+	}
+	if headRec.Code != http.StatusOK {
+		t.Fatalf("HEAD status = %d, want %d", headRec.Code, http.StatusOK)
+	}
+	if got := headRec.Header().Get("Accept-Ranges"); got != "bytes" {
+		t.Fatalf("HEAD Accept-Ranges = %q", got)
+	}
+	if got := headRec.Header().Get("Accept-Ranges"); got == "none" {
+		t.Fatalf("HEAD should not disable ranges")
+	}
+
+	rangeReq := httptest.NewRequest(http.MethodGet, "/clip.mp4", nil)
+	rangeReq.Header.Set("Range", "bytes=2-5")
+	rangeRec := httptest.NewRecorder()
+	if err := service.Serve(rangeRec, rangeReq, mediaItem(1, "h264", "aac", ".mp4"), path); err != nil {
+		t.Fatalf("serve range: %v", err)
+	}
+	if rangeRec.Code != http.StatusPartialContent {
+		t.Fatalf("range status = %d, want %d", rangeRec.Code, http.StatusPartialContent)
+	}
+	if got := rangeRec.Header().Get("Content-Range"); got != "bytes 2-5/10" {
 		t.Fatalf("Content-Range = %q", got)
 	}
-	if got := rec.Header().Get("Accept-Ranges"); got != "bytes" {
-		t.Fatalf("Accept-Ranges = %q", got)
-	}
-	if got := rec.Body.String(); got != "2345" {
+	if got := rangeRec.Body.String(); got != "2345" {
 		t.Fatalf("body = %q", got)
 	}
 }
 
-func TestServeCachedMP4SupportsRangeRequests(t *testing.T) {
-	root := t.TempDir()
-	service := NewService(config.NewService(root))
-	sourcePath := filepath.Join(root, "media", "movie.mkv")
-	if err := os.MkdirAll(filepath.Dir(sourcePath), 0o755); err != nil {
-		t.Fatalf("mkdir media: %v", err)
-	}
-	if err := os.WriteFile(sourcePath, []byte("source"), 0o644); err != nil {
-		t.Fatalf("write source: %v", err)
-	}
+func TestHLSSegmentArgsUseRequestedWindowAndQuality(t *testing.T) {
+	args := hlsSegmentArgs(
+		`C:\media\movie.mkv`,
+		`C:\Temp\session\segment_00008.ts.partial`,
+		smoothProfileFor(Quality480p, 720),
+		64,
+		8,
+	)
 
-	item := mediaItem(77, "h264", "ac3", ".mkv")
-	target, err := service.targetFor(item, ModeMP4)
-	if err != nil {
-		t.Fatalf("target: %v", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(target.OutputPath), 0o755); err != nil {
-		t.Fatalf("mkdir cache: %v", err)
-	}
-	if err := os.WriteFile(target.OutputPath, []byte("abcdefghij"), 0o644); err != nil {
-		t.Fatalf("write cache: %v", err)
-	}
-
-	oldTime := time.Now().Add(-2 * time.Hour)
-	newTime := time.Now().Add(-1 * time.Hour)
-	if err := os.Chtimes(sourcePath, oldTime, oldTime); err != nil {
-		t.Fatalf("chtimes source: %v", err)
-	}
-	if err := os.Chtimes(target.OutputPath, newTime, newTime); err != nil {
-		t.Fatalf("chtimes cache: %v", err)
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "/api/library/77/stream", nil)
-	req.Header.Set("Range", "bytes=1-3")
-	rec := httptest.NewRecorder()
-
-	if err := service.Serve(rec, req, item, sourcePath); err != nil {
-		t.Fatalf("serve cached mp4: %v", err)
-	}
-	if rec.Code != http.StatusPartialContent {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusPartialContent)
-	}
-	if got := rec.Header().Get("Content-Range"); got != "bytes 1-3/10" {
-		t.Fatalf("Content-Range = %q", got)
-	}
-	if got := rec.Header().Get("Accept-Ranges"); got != "bytes" {
-		t.Fatalf("Accept-Ranges = %q", got)
-	}
-}
-
-func TestIsFreshDetectsStaleCache(t *testing.T) {
-	root := t.TempDir()
-	sourcePath := filepath.Join(root, "source.mkv")
-	targetPath := filepath.Join(root, "target.mp4")
-	if err := os.WriteFile(sourcePath, []byte("source"), 0o644); err != nil {
-		t.Fatalf("write source: %v", err)
-	}
-	if err := os.WriteFile(targetPath, []byte("target"), 0o644); err != nil {
-		t.Fatalf("write target: %v", err)
-	}
-
-	sourceTime := time.Now()
-	staleTime := sourceTime.Add(-time.Hour)
-	if err := os.Chtimes(sourcePath, sourceTime, sourceTime); err != nil {
-		t.Fatalf("chtimes source: %v", err)
-	}
-	if err := os.Chtimes(targetPath, staleTime, staleTime); err != nil {
-		t.Fatalf("chtimes stale target: %v", err)
-	}
-
-	fresh, err := isFresh(sourcePath, targetPath)
-	if err != nil {
-		t.Fatalf("isFresh stale: %v", err)
-	}
-	if fresh {
-		t.Fatalf("expected stale target")
-	}
-
-	freshTime := sourceTime.Add(time.Hour)
-	if err := os.Chtimes(targetPath, freshTime, freshTime); err != nil {
-		t.Fatalf("chtimes fresh target: %v", err)
-	}
-	fresh, err = isFresh(sourcePath, targetPath)
-	if err != nil {
-		t.Fatalf("isFresh fresh: %v", err)
-	}
-	if !fresh {
-		t.Fatalf("expected fresh target")
-	}
-}
-
-func TestPreparationJobsAreDeduplicated(t *testing.T) {
-	root := t.TempDir()
-	service := NewService(config.NewService(root))
-	sourcePath := filepath.Join(root, "media", "movie.mkv")
-	if err := os.MkdirAll(filepath.Dir(sourcePath), 0o755); err != nil {
-		t.Fatalf("mkdir media: %v", err)
-	}
-	if err := os.WriteFile(sourcePath, []byte("source"), 0o644); err != nil {
-		t.Fatalf("write source: %v", err)
-	}
-
-	item := mediaItem(88, "h264", "ac3", ".mkv")
-	started := make(chan struct{})
-	release := make(chan struct{})
-	var calls atomic.Int32
-	service.generator = func(ctx context.Context, item *library.MediaItem, sourcePath string, target playbackTarget) error {
-		if calls.Add(1) == 1 {
-			close(started)
+	for _, want := range []string{"-ss", "64.000", "-t", "8.000", "scale=-2:480", "1400k", "-f", "mpegts"} {
+		if !slices.Contains(args, want) {
+			t.Fatalf("hlsSegmentArgs() missing %q in %#v", want, args)
 		}
-		<-release
+	}
+	if slices.Contains(args, "-re") {
+		t.Fatalf("on-demand segment generation should not be realtime-throttled: %#v", args)
+	}
+}
+
+func TestHLSSegmentArgsPreserveSourceResolutionForOriginalQuality(t *testing.T) {
+	profile := smoothProfileFor(QualityOriginal, 1080)
+	if profile.Quality != QualityOriginal {
+		t.Fatalf("quality = %q, want %q", profile.Quality, QualityOriginal)
+	}
+	if profile.Height != 1080 {
+		t.Fatalf("height = %d, want 1080", profile.Height)
+	}
+
+	args := hlsSegmentArgs(
+		`C:\media\movie.mkv`,
+		`C:\Temp\session\segment_00001.ts.partial`,
+		profile,
+		8,
+		8,
+	)
+
+	for _, want := range []string{"scale=trunc(iw/2)*2:trunc(ih/2)*2", "-crf", "18", "-f", "mpegts"} {
+		if !slices.Contains(args, want) {
+			t.Fatalf("hlsSegmentArgs() missing %q in %#v", want, args)
+		}
+	}
+	for _, notWant := range []string{"scale=-2:720", "-b:v", "-maxrate", "-bufsize"} {
+		if slices.Contains(args, notWant) {
+			t.Fatalf("hlsSegmentArgs() should not include %q for original quality: %#v", notWant, args)
+		}
+	}
+}
+
+func TestStartSessionAcceptsOriginalQuality(t *testing.T) {
+	root := t.TempDir()
+	cfg := config.NewService(root)
+	sourcePath := writeFile(t, root, "media/movie.mkv", "source")
+	_ = writeFile(t, root, "bin/ffmpeg.exe", "ffmpeg")
+
+	service := NewService(cfg)
+	session, err := service.StartSession(mediaItem(55, "h264", "aac", ".mkv"), sourcePath, SessionInput{Quality: QualityOriginal})
+	if err != nil {
+		t.Fatalf("start session: %v", err)
+	}
+	defer func() { _ = service.StopSession(session.SessionID) }()
+
+	if session.Quality != QualityOriginal {
+		t.Fatalf("quality = %q, want %q", session.Quality, QualityOriginal)
+	}
+	sessionState := service.getSession(session.SessionID)
+	if sessionState == nil {
+		t.Fatalf("expected session state")
+	}
+	if sessionState.Profile.Quality != QualityOriginal {
+		t.Fatalf("profile quality = %q, want %q", sessionState.Profile.Quality, QualityOriginal)
+	}
+}
+
+func TestStartSessionReturnsFullVODManifestWithoutGeneratingSegments(t *testing.T) {
+	root := t.TempDir()
+	cfg := config.NewService(root)
+	ffmpegPath := writeFile(t, root, "bin/ffmpeg.exe", "ffmpeg")
+	sourcePath := writeFile(t, root, "media/movie.mkv", "source")
+
+	service := NewService(cfg)
+	service.segmentGenerator = func(ctx context.Context, gotFFmpegPath string, gotSourcePath string, outPath string, item library.MediaItem, profile smoothProfile, startSeconds float64, durationSeconds float64) error {
+		t.Fatalf("manifest should not generate segments")
 		return nil
 	}
 
-	if _, err := service.Status(item, sourcePath, ModeMP4, false, true); err != nil {
-		t.Fatalf("first status: %v", err)
+	session, err := service.StartSession(mediaItem(55, "h264", "aac", ".mkv"), sourcePath, SessionInput{StartSeconds: 60, Quality: Quality360p})
+	if err != nil {
+		t.Fatalf("start session: %v", err)
 	}
-	if _, err := service.Status(item, sourcePath, ModeMP4, false, true); err != nil {
-		t.Fatalf("second status: %v", err)
+	defer func() { _ = service.StopSession(session.SessionID) }()
+
+	if session.SessionID == "" {
+		t.Fatalf("expected session id")
 	}
+	if session.ManifestURL != "/api/playback/sessions/"+session.SessionID+"/index.m3u8" {
+		t.Fatalf("manifest url = %q", session.ManifestURL)
+	}
+	if session.Quality != Quality360p {
+		t.Fatalf("quality = %q, want %q", session.Quality, Quality360p)
+	}
+	if session.StartSeconds != 60 {
+		t.Fatalf("start_seconds = %v, want 60", session.StartSeconds)
+	}
+	if _, err := os.Stat(ffmpegPath); err != nil {
+		t.Fatalf("expected fake ffmpeg to exist: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, session.ManifestURL, nil)
+	rec := httptest.NewRecorder()
+	if err := service.ServeSessionAsset(rec, req, session.SessionID, "index.m3u8"); err != nil {
+		t.Fatalf("serve manifest: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("manifest status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	manifest := rec.Body.String()
+	for _, want := range []string{"#EXT-X-PLAYLIST-TYPE:VOD", "#EXT-X-ENDLIST", "segment_00000.ts", "segment_00014.ts"} {
+		if !strings.Contains(manifest, want) {
+			t.Fatalf("manifest missing %q:\n%s", want, manifest)
+		}
+	}
+}
+
+func TestSegmentRequestGeneratesTemporarySegmentAndStopRemovesIt(t *testing.T) {
+	root := t.TempDir()
+	cfg := config.NewService(root)
+	sourcePath := writeFile(t, root, "media/movie.mkv", "source")
+	_ = writeFile(t, root, "bin/ffmpeg.exe", "ffmpeg")
+
+	service := NewService(cfg)
+	var mu sync.Mutex
+	var starts []float64
+	service.segmentGenerator = func(ctx context.Context, gotFFmpegPath string, gotSourcePath string, outPath string, item library.MediaItem, profile smoothProfile, startSeconds float64, durationSeconds float64) error {
+		mu.Lock()
+		starts = append(starts, startSeconds)
+		mu.Unlock()
+		return os.WriteFile(outPath, []byte("segment"), 0o644)
+	}
+
+	session, err := service.StartSession(mediaItem(55, "h264", "aac", ".mkv"), sourcePath, SessionInput{Quality: Quality480p})
+	if err != nil {
+		t.Fatalf("start session: %v", err)
+	}
+	sessionState := service.getSession(session.SessionID)
+	if sessionState == nil {
+		t.Fatalf("expected session state")
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/playback/sessions/"+session.SessionID+"/segment_00003.ts", nil)
+	rec := httptest.NewRecorder()
+	if err := service.ServeSessionAsset(rec, req, session.SessionID, "segment_00003.ts"); err != nil {
+		t.Fatalf("serve segment: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("segment status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if got := rec.Body.String(); got != "segment" {
+		t.Fatalf("segment body = %q", got)
+	}
+	if !fileReady(filepath.Join(sessionState.Dir, "segment_00003.ts")) {
+		t.Fatalf("expected generated segment file")
+	}
+
+	mu.Lock()
+	if len(starts) == 0 || starts[0] != 24 {
+		t.Fatalf("generated starts = %#v, want first start 24", starts)
+	}
+	mu.Unlock()
+
+	sessionDir := sessionState.Dir
+	if err := service.StopSession(session.SessionID); err != nil {
+		t.Fatalf("stop session: %v", err)
+	}
+	if _, err := os.Stat(sessionDir); !os.IsNotExist(err) {
+		t.Fatalf("expected session dir removed, err=%v", err)
+	}
+}
+
+func TestStopSessionCancelsActiveSegmentGeneration(t *testing.T) {
+	root := t.TempDir()
+	cfg := config.NewService(root)
+	sourcePath := writeFile(t, root, "media/movie.mkv", "source")
+	_ = writeFile(t, root, "bin/ffmpeg.exe", "ffmpeg")
+
+	service := NewService(cfg)
+	started := make(chan struct{})
+	service.segmentGenerator = func(ctx context.Context, gotFFmpegPath string, gotSourcePath string, outPath string, item library.MediaItem, profile smoothProfile, startSeconds float64, durationSeconds float64) error {
+		close(started)
+		<-ctx.Done()
+		return ctx.Err()
+	}
+
+	session, err := service.StartSession(mediaItem(88, "h264", "aac", ".mkv"), sourcePath, SessionInput{})
+	if err != nil {
+		t.Fatalf("start session: %v", err)
+	}
+	sessionState := service.getSession(session.SessionID)
+	if sessionState == nil {
+		t.Fatalf("expected session state")
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		req := httptest.NewRequest(http.MethodGet, "/api/playback/sessions/"+session.SessionID+"/segment_00000.ts", nil)
+		rec := httptest.NewRecorder()
+		done <- service.ServeSessionAsset(rec, req, session.SessionID, "segment_00000.ts")
+	}()
 
 	select {
 	case <-started:
 	case <-time.After(2 * time.Second):
-		t.Fatalf("generation did not start")
+		t.Fatalf("segment generation did not start")
 	}
-	if got := calls.Load(); got != 1 {
-		t.Fatalf("generator calls = %d, want 1", got)
+
+	if err := service.StopSession(session.SessionID); err != nil {
+		t.Fatalf("stop session: %v", err)
 	}
-	close(release)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("segment request did not unblock")
+	}
+	if _, err := os.Stat(sessionState.Dir); !os.IsNotExist(err) {
+		t.Fatalf("expected session dir removed, err=%v", err)
+	}
 }
 
-func TestHLSVariantsAreCappedBySourceHeight(t *testing.T) {
-	variants := hlsVariantsFor(480)
-	if len(variants) != 2 {
-		t.Fatalf("variant count = %d, want 2", len(variants))
+func TestCleanupLegacyPlaybackCacheOnlyRemovesPlaybackDirectory(t *testing.T) {
+	root := t.TempDir()
+	cfg := config.NewService(root)
+	mediaPath := writeFile(t, root, "media/original.mp4", "source")
+
+	loaded, err := cfg.Load()
+	if err != nil {
+		t.Fatalf("load config: %v", err)
 	}
-	if variants[0].Name != "480p" || variants[1].Name != "360p" {
-		t.Fatalf("variants = %#v", variants)
+	cacheRoot := cfg.ResolvePath(loaded.Paths.PreviewCache)
+	legacyPath := writeFile(t, cacheRoot, "playback/mp4/1.mp4", "cache")
+
+	service := NewService(cfg)
+	if !service.CleanupLegacyPlaybackCache() {
+		t.Fatalf("expected cleanup success")
 	}
+	if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
+		t.Fatalf("expected legacy cache removed, err=%v", err)
+	}
+	if _, err := os.Stat(mediaPath); err != nil {
+		t.Fatalf("expected original media to remain, err=%v", err)
+	}
+}
+
+func writeFile(t *testing.T, root string, relPath string, content string) string {
+	t.Helper()
+
+	path := filepath.Join(root, filepath.FromSlash(relPath))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", path, err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+	return path
 }
 
 func mediaItem(id int64, videoCodec string, audioCodec string, extension string) *library.MediaItem {

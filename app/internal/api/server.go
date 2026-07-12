@@ -50,6 +50,10 @@ func NewRouter(s *Server) http.Handler {
 	if s.Playback == nil {
 		s.Playback = playback.NewService(s.ConfigService)
 	}
+	go func() {
+		s.Playback.CleanupLegacyPlaybackCache()
+		s.Playback.CleanupSessionTemp()
+	}()
 	if s.Reconciler == nil && s.LibraryRepo != nil {
 		s.Reconciler = library.NewReconcileService(s.LibraryRepo)
 	}
@@ -924,7 +928,7 @@ func NewRouter(s *Server) http.Handler {
 		}
 
 		path := s.Previewer.ResolveMediaPath(item)
-		playbackStatus, err := s.Playback.Status(item, path, playback.ModeAuto, !auth.IsLoopbackRequest(r), true)
+		playbackPlan, err := s.Playback.Plan(item, path, !auth.IsLoopbackRequest(r))
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{
 				"error": err.Error(),
@@ -936,7 +940,7 @@ func NewRouter(s *Server) http.Handler {
 			"item":            item,
 			"prev_episode_id": prevID,
 			"next_episode_id": nextID,
-			"playback":        playbackStatus,
+			"playback":        playbackPlan,
 		})
 	})
 
@@ -1058,7 +1062,7 @@ func NewRouter(s *Server) http.Handler {
 		http.ServeFile(w, r, clipPath)
 	})
 
-	r.Get("/api/library/{id}/playback/status", func(w http.ResponseWriter, r *http.Request) {
+	r.Post("/api/library/{id}/playback/session", func(w http.ResponseWriter, r *http.Request) {
 		id, ok := parseIDParam(chi.URLParam(r, "id"))
 		if !ok {
 			writeJSON(w, http.StatusBadRequest, map[string]any{
@@ -1076,7 +1080,15 @@ func NewRouter(s *Server) http.Handler {
 		}
 
 		path := s.Previewer.ResolveMediaPath(item)
-		status, err := s.Playback.Status(item, path, r.URL.Query().Get("mode"), !auth.IsLoopbackRequest(r), true)
+		var payload playback.SessionInput
+		if r.Body != nil {
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json body"})
+				return
+			}
+		}
+
+		session, err := s.Playback.StartSession(item, path, payload)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{
 				"error": err.Error(),
@@ -1084,38 +1096,30 @@ func NewRouter(s *Server) http.Handler {
 			return
 		}
 
-		writeJSON(w, http.StatusOK, status)
+		writeJSON(w, http.StatusOK, session)
 	})
 
-	r.Get("/api/library/{id}/playback/hls/*", func(w http.ResponseWriter, r *http.Request) {
-		id, ok := parseIDParam(chi.URLParam(r, "id"))
-		if !ok {
-			http.Error(w, "invalid media id", http.StatusBadRequest)
+	r.Get("/api/playback/sessions/{sessionID}/index.m3u8", func(w http.ResponseWriter, r *http.Request) {
+		if err := s.Playback.ServeSessionAsset(w, r, chi.URLParam(r, "sessionID"), "index.m3u8"); err != nil {
+			writePlaybackAssetError(w, err)
+		}
+	})
+
+	r.Get("/api/playback/sessions/{sessionID}/*", func(w http.ResponseWriter, r *http.Request) {
+		if err := s.Playback.ServeSessionAsset(w, r, chi.URLParam(r, "sessionID"), chi.URLParam(r, "*")); err != nil {
+			writePlaybackAssetError(w, err)
+		}
+	})
+
+	r.Delete("/api/playback/sessions/{sessionID}", func(w http.ResponseWriter, r *http.Request) {
+		if err := s.Playback.StopSession(chi.URLParam(r, "sessionID")); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{
+				"error": err.Error(),
+			})
 			return
 		}
 
-		item, err := s.LibraryRepo.GetByID(id)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusNotFound)
-			return
-		}
-
-		path := s.Previewer.ResolveMediaPath(item)
-		if strings.TrimSpace(path) == "" {
-			http.Error(w, "media path is empty", http.StatusBadRequest)
-			return
-		}
-
-		if err := s.Playback.ServeHLS(w, r, item, path, chi.URLParam(r, "*")); err != nil {
-			status := http.StatusInternalServerError
-			var notReady *playback.NotReadyError
-			if errors.As(err, &notReady) {
-				status = http.StatusTooEarly
-			} else if os.IsNotExist(err) {
-				status = http.StatusNotFound
-			}
-			http.Error(w, err.Error(), status)
-		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	})
 
 	r.Get("/api/library/{id}/stream", func(w http.ResponseWriter, r *http.Request) {
@@ -1139,10 +1143,7 @@ func NewRouter(s *Server) http.Handler {
 
 		if err := s.Playback.Serve(w, r, item, path); err != nil {
 			status := http.StatusInternalServerError
-			var notReady *playback.NotReadyError
-			if errors.As(err, &notReady) {
-				status = http.StatusTooEarly
-			} else if os.IsNotExist(err) {
+			if os.IsNotExist(err) {
 				status = http.StatusNotFound
 			}
 			http.Error(w, err.Error(), status)
@@ -1311,6 +1312,14 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(value)
+}
+
+func writePlaybackAssetError(w http.ResponseWriter, err error) {
+	status := http.StatusInternalServerError
+	if os.IsNotExist(err) || errors.Is(err, playback.ErrSessionNotFound) {
+		status = http.StatusNotFound
+	}
+	http.Error(w, err.Error(), status)
 }
 
 func parseCSVInt64(value string) []int64 {
